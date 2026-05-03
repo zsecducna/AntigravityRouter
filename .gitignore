@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+
+.omx/logs/
+.omx/state/
+.omx/team/
+.omx/worktrees/
+.omx/metrics.json
+.omx/tmux-hook.json
