@@ -54,6 +54,89 @@ public enum ProxyProtocolGate {
     }
 }
 
+public struct HTTPRequestEnvelope: Equatable, Sendable {
+    public var method: String
+    public var path: String
+    public var httpVersion: String
+    public var headers: [String: String]
+    public var body: Data
+
+    public init(method: String, path: String, httpVersion: String, headers: [String: String], body: Data) {
+        self.method = method
+        self.path = path
+        self.httpVersion = httpVersion
+        self.headers = headers
+        self.body = body
+    }
+
+    public func removingProxyHeaders() -> HTTPRequestEnvelope {
+        HTTPRequestEnvelope(
+            method: method,
+            path: path,
+            httpVersion: httpVersion,
+            headers: headers.filter { !$0.key.lowercased().hasPrefix("proxy-") },
+            body: body
+        )
+    }
+}
+
+public enum HTTPRequestParseError: Error, Equatable, Sendable {
+    case incomplete
+    case malformedRequestLine(String)
+    case invalidContentLength(String)
+}
+
+public enum HTTPRequestParser {
+    public static func parse(_ data: Data) throws -> HTTPRequestEnvelope {
+        let delimiterRange: Range<Data.Index>
+        if let range = data.range(of: Data("\r\n\r\n".utf8)) {
+            delimiterRange = range
+        } else if let range = data.range(of: Data("\n\n".utf8)) {
+            delimiterRange = range
+        } else {
+            throw HTTPRequestParseError.incomplete
+        }
+
+        guard let headerText = String(data: data[..<delimiterRange.lowerBound], encoding: .utf8) else {
+            throw HTTPRequestParseError.incomplete
+        }
+        let lines = headerText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+        guard let requestLine = lines.first else {
+            throw HTTPRequestParseError.incomplete
+        }
+        let parts = requestLine.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count == 3 else {
+            throw HTTPRequestParseError.malformedRequestLine(requestLine)
+        }
+
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() where !line.isEmpty {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            headers[name] = value
+        }
+
+        let rawBody = data[delimiterRange.upperBound...]
+        let body: Data
+        if let contentLength = headers["content-length"] {
+            guard let expectedLength = Int(contentLength), expectedLength >= 0 else {
+                throw HTTPRequestParseError.invalidContentLength(contentLength)
+            }
+            guard rawBody.count >= expectedLength else {
+                throw HTTPRequestParseError.incomplete
+            }
+            body = Data(rawBody.prefix(expectedLength))
+        } else {
+            body = Data(rawBody)
+        }
+
+        return HTTPRequestEnvelope(method: parts[0], path: parts[1], httpVersion: parts[2], headers: headers, body: body)
+    }
+}
+
 public struct ConnectRequest: Equatable, Sendable {
     public var host: String
     public var port: Int
@@ -108,4 +191,49 @@ public enum ConnectRequestParser {
 
 public struct ProxyCore: Sendable {
     public init() {}
+}
+
+public enum ProxyPlanningFailure: Equatable, Sendable {
+    case modelExtractionFailed
+    case routingFailed(RoutingFailureReason)
+    case translationFailed(TranslatorFailureReason)
+}
+
+public enum PlannedProxyAction: Equatable, Sendable {
+    case forwardToGoogle(request: HTTPRequestEnvelope, metadata: ModelRequestMetadata)
+    case routeToCheapRouter(payload: CheapRouterRequestPayload, metadata: ModelRequestMetadata)
+    case failClosed(reason: ProxyPlanningFailure)
+}
+
+public struct ProxyRequestPlanner: Sendable {
+    public var routingEngine: RoutingEngine
+    public var translator: Translator
+
+    public init(routingEngine: RoutingEngine, translator: Translator = Translator()) {
+        self.routingEngine = routingEngine
+        self.translator = translator
+    }
+
+    public func plan(host: String, request: HTTPRequestEnvelope) -> PlannedProxyAction {
+        let metadata: ModelRequestMetadata
+        do {
+            metadata = try ModelExtractor.extract(host: host, path: request.path, body: request.body)
+        } catch {
+            return .failClosed(reason: .modelExtractionFailed)
+        }
+
+        switch routingEngine.decision(for: metadata) {
+        case .googleDirect:
+            return .forwardToGoogle(request: request.removingProxyHeaders(), metadata: metadata)
+        case let .cheapRouter(endpoint):
+            switch translator.translate(metadata: metadata, body: request.body, endpoint: endpoint) {
+            case let .success(payload):
+                return .routeToCheapRouter(payload: payload, metadata: metadata)
+            case let .failClosed(reason):
+                return .failClosed(reason: .translationFailed(reason))
+            }
+        case let .failClosed(reason):
+            return .failClosed(reason: .routingFailed(reason))
+        }
+    }
 }

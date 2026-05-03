@@ -32,11 +32,22 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(String(describing: KeychainSecretKey.cheapRouterAPIKey), "cheapRouterAPIKey")
     }
 
-    func testSecurityBackedStoreIsExplicitlyUnsupportedPlaceholder() {
-        let store = SecurityKeychainStore()
-
-        XCTAssertThrowsError(try store.setString("secret", for: .cheapRouterAPIKey)) { error in
-            XCTAssertEqual(error as? KeychainStoreError, .unsupportedPlatformOperation("SecurityKeychainStore is not implemented yet"))
+    func testSecurityBackedStoreRoundTripsAndDeletesFromScopedService() throws {
+        let store = SecurityKeychainStore(service: "AntigravityPorterTests.\(UUID().uuidString)")
+        defer {
+            try? store.delete(.cheapRouterAPIKey)
+            try? store.delete(.certificateAuthorityPrivateKey)
         }
+
+        try store.setString("secret", for: .cheapRouterAPIKey)
+        try store.setData(Data([0xCA, 0xFE]), for: .certificateAuthorityPrivateKey)
+
+        XCTAssertEqual(try store.string(for: .cheapRouterAPIKey), "secret")
+        XCTAssertEqual(try store.data(for: .certificateAuthorityPrivateKey), Data([0xCA, 0xFE]))
+
+        try store.delete(.cheapRouterAPIKey)
+
+        XCTAssertNil(try store.string(for: .cheapRouterAPIKey))
+        XCTAssertEqual(try store.data(for: .certificateAuthorityPrivateKey), Data([0xCA, 0xFE]))
     }
 }

@@ -43,17 +43,30 @@ public enum SystemProxyCommand: Equatable, Sendable {
     case setSecureWebProxyState(service: String, enabled: Bool)
     case setBypassDomains(service: String, domains: [String])
 
-    public var networkSetupCommand: String {
+    public var serviceName: String {
+        switch self {
+        case let .setSecureWebProxy(service, _, _),
+             let .setSecureWebProxyState(service, _),
+             let .setBypassDomains(service, _):
+            service
+        }
+    }
+
+    public var networkSetupArguments: [String] {
         switch self {
         case let .setSecureWebProxy(service, host, port):
-            "networksetup -setsecurewebproxy \(service) \(host) \(port)"
+            ["-setsecurewebproxy", service, host, String(port)]
         case let .setSecureWebProxyState(service, enabled):
-            "networksetup -setsecurewebproxystate \(service) \(enabled ? "on" : "off")"
+            ["-setsecurewebproxystate", service, enabled ? "on" : "off"]
         case let .setBypassDomains(service, domains):
             domains.isEmpty
-                ? "networksetup -setproxybypassdomains \(service) Empty"
-                : "networksetup -setproxybypassdomains \(service) \(domains.joined(separator: " "))"
+                ? ["-setproxybypassdomains", service, "Empty"]
+                : ["-setproxybypassdomains", service] + domains
         }
+    }
+
+    public var networkSetupCommand: String {
+        "networksetup " + networkSetupArguments.map(shellEscaped).joined(separator: " ")
     }
 }
 
@@ -110,6 +123,138 @@ public enum SystemProxyPlanner {
     }
 }
 
-public struct SystemProxyManager: Sendable {
+public struct SystemProxyCommandResult: Equatable, Sendable {
+    public var command: SystemProxyCommand
+    public var standardOutput: String
+    public var standardError: String
+
+    public init(command: SystemProxyCommand, standardOutput: String = "", standardError: String = "") {
+        self.command = command
+        self.standardOutput = standardOutput
+        self.standardError = standardError
+    }
+}
+
+public protocol SystemProxyCommandExecuting: Sendable {
+    func run(_ command: SystemProxyCommand) throws -> SystemProxyCommandResult
+}
+
+public struct NetworkSetupCommandExecutor: SystemProxyCommandExecuting {
     public init() {}
+
+    public func run(_ command: SystemProxyCommand) throws -> SystemProxyCommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process.arguments = command.networkSetupArguments
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let error = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            throw SystemProxyManagerError.commandFailed(command: command, status: process.terminationStatus, stderr: error)
+        }
+        return SystemProxyCommandResult(command: command, standardOutput: output, standardError: error)
+    }
+}
+
+public struct SystemProxyRollbackReport: Equatable, Sendable {
+    public var attempted: SystemProxyPlan
+    public var results: [SystemProxyCommandResult]
+    public var failure: SystemProxyRollbackFailure?
+
+    public init(attempted: SystemProxyPlan, results: [SystemProxyCommandResult], failure: SystemProxyRollbackFailure? = nil) {
+        self.attempted = attempted
+        self.results = results
+        self.failure = failure
+    }
+}
+
+public enum SystemProxyRollbackFailure: Error, Equatable, Sendable {
+    case commandFailed(command: SystemProxyCommand, status: Int32, stderr: String)
+}
+
+public enum SystemProxyManagerError: Error, Equatable, Sendable {
+    case commandFailed(command: SystemProxyCommand, status: Int32, stderr: String)
+    case enableFailed(command: SystemProxyCommand, appliedServices: [String], rollback: SystemProxyRollbackReport)
+}
+
+public struct SystemProxyManager: Sendable {
+    private let executor: any SystemProxyCommandExecuting
+
+    public init(executor: any SystemProxyCommandExecuting = NetworkSetupCommandExecutor()) {
+        self.executor = executor
+    }
+
+    public func apply(_ plan: SystemProxyPlan) throws -> [SystemProxyCommandResult] {
+        try plan.commands.map(executor.run)
+    }
+
+    public func enable(_ plan: SystemProxyPlan, originalSnapshot: SystemProxySnapshot) throws -> [SystemProxyCommandResult] {
+        var results: [SystemProxyCommandResult] = []
+        var mutatedServices: [String] = []
+
+        for command in plan.commands {
+            do {
+                let result = try executor.run(command)
+                results.append(result)
+                if !mutatedServices.contains(command.serviceName) {
+                    mutatedServices.append(command.serviceName)
+                }
+            } catch {
+                let rollback = SystemProxyPlanner.rollbackPlan(
+                    afterFailedEnable: plan,
+                    originalSnapshot: originalSnapshot,
+                    mutatedServices: mutatedServices
+                )
+                let rollbackReport = runRollback(rollback)
+                throw SystemProxyManagerError.enableFailed(
+                    command: command,
+                    appliedServices: mutatedServices,
+                    rollback: rollbackReport
+                )
+            }
+        }
+
+        return results
+    }
+
+    private func runRollback(_ plan: SystemProxyPlan) -> SystemProxyRollbackReport {
+        var results: [SystemProxyCommandResult] = []
+        for command in plan.commands {
+            do {
+                results.append(try executor.run(command))
+            } catch let error as SystemProxyManagerError {
+                let failure: SystemProxyRollbackFailure
+                switch error {
+                case let .commandFailed(command, status, stderr):
+                    failure = .commandFailed(command: command, status: status, stderr: stderr)
+                case let .enableFailed(command, _, _):
+                    failure = .commandFailed(command: command, status: -1, stderr: String(describing: error))
+                }
+                return SystemProxyRollbackReport(attempted: plan, results: results, failure: failure)
+            } catch {
+                return SystemProxyRollbackReport(
+                    attempted: plan,
+                    results: results,
+                    failure: .commandFailed(command: command, status: -1, stderr: String(describing: error))
+                )
+            }
+        }
+        return SystemProxyRollbackReport(attempted: plan, results: results)
+    }
+}
+
+private func shellEscaped(_ value: String) -> String {
+    guard !value.isEmpty else { return "''" }
+    guard value.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "'\"$`\\!*?[]"))) != nil else {
+        return value
+    }
+    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Security)
+import Security
+#endif
 
 public enum KeychainSecretKey: String, CaseIterable, CustomStringConvertible, Sendable {
     case cheapRouterAPIKey
@@ -13,6 +16,7 @@ public enum KeychainSecretKey: String, CaseIterable, CustomStringConvertible, Se
 public enum KeychainStoreError: Error, Equatable, Sendable {
     case unsupportedPlatformOperation(String)
     case invalidStringData(KeychainSecretKey)
+    case securityFrameworkError(operation: String, key: KeychainSecretKey, status: Int32)
 }
 
 public protocol KeychainStoring {
@@ -61,20 +65,83 @@ public final class InMemoryKeychainStore: KeychainStoring, CustomStringConvertib
     }
 }
 
-public struct SecurityKeychainStore: KeychainStoring {
-    private static let unsupportedMessage = "SecurityKeychainStore is not implemented yet"
+public struct SecurityKeychainStore: KeychainStoring, Sendable {
+    private let service: String
+    private let accessGroup: String?
 
-    public init() {}
+    public init(service: String = "uk.cheaprouter.AntigravityPorter", accessGroup: String? = nil) {
+        self.service = service
+        self.accessGroup = accessGroup
+    }
 
     public func data(for key: KeychainSecretKey) throws -> Data? {
-        throw KeychainStoreError.unsupportedPlatformOperation(Self.unsupportedMessage)
+        #if canImport(Security)
+        var query = baseQuery(for: key)
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw KeychainStoreError.securityFrameworkError(operation: "read", key: key, status: status)
+        }
+        return result as? Data
+        #else
+        throw KeychainStoreError.unsupportedPlatformOperation("Security framework is unavailable")
+        #endif
     }
 
     public func setData(_ data: Data, for key: KeychainSecretKey) throws {
-        throw KeychainStoreError.unsupportedPlatformOperation(Self.unsupportedMessage)
+        #if canImport(Security)
+        var addQuery = baseQuery(for: key)
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            return
+        }
+        if addStatus == errSecDuplicateItem {
+            let updateStatus = SecItemUpdate(
+                baseQuery(for: key) as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw KeychainStoreError.securityFrameworkError(operation: "update", key: key, status: updateStatus)
+            }
+            return
+        }
+        throw KeychainStoreError.securityFrameworkError(operation: "write", key: key, status: addStatus)
+        #else
+        throw KeychainStoreError.unsupportedPlatformOperation("Security framework is unavailable")
+        #endif
     }
 
     public func delete(_ key: KeychainSecretKey) throws {
-        throw KeychainStoreError.unsupportedPlatformOperation(Self.unsupportedMessage)
+        #if canImport(Security)
+        let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainStoreError.securityFrameworkError(operation: "delete", key: key, status: status)
+        }
+        #else
+        throw KeychainStoreError.unsupportedPlatformOperation("Security framework is unavailable")
+        #endif
     }
+
+    #if canImport(Security)
+    private func baseQuery(for key: KeychainSecretKey) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key.rawValue
+        ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
+    }
+    #endif
 }

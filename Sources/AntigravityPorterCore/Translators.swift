@@ -147,7 +147,110 @@ public struct Translator: Sendable {
         guard metadata.action == .generateContent || metadata.action == .streamGenerateContent else {
             return .failClosed(reason: .unsupportedAction)
         }
-        return .success(CheapRouterRequestPayload(endpoint: endpoint, model: metadata.model, body: body))
+        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return .failClosed(reason: .unsupportedSchema)
+        }
+
+        let translated: [String: Any]?
+        switch endpoint {
+        case .chatCompletions:
+            translated = makeOpenAIChatPayload(metadata: metadata, object: object)
+        case .messages:
+            translated = makeAnthropicMessagesPayload(metadata: metadata, object: object)
+        case .responses:
+            translated = nil
+        }
+
+        guard let translated,
+              JSONSerialization.isValidJSONObject(translated),
+              let data = try? JSONSerialization.data(withJSONObject: translated, options: [.sortedKeys])
+        else {
+            return .failClosed(reason: .unsupportedSchema)
+        }
+
+        return .success(CheapRouterRequestPayload(endpoint: endpoint, model: metadata.model, body: data))
+    }
+
+    private func makeOpenAIChatPayload(metadata: ModelRequestMetadata, object: [String: Any]) -> [String: Any]? {
+        guard let messages = geminiMessages(from: object, includeSystemMessage: true), !messages.isEmpty else {
+            return nil
+        }
+
+        var payload: [String: Any] = [
+            "model": metadata.model,
+            "messages": messages,
+            "stream": metadata.action == .streamGenerateContent
+        ]
+        applyGenerationConfig(from: object, to: &payload)
+        return payload
+    }
+
+    private func makeAnthropicMessagesPayload(metadata: ModelRequestMetadata, object: [String: Any]) -> [String: Any]? {
+        guard let messages = geminiMessages(from: object, includeSystemMessage: false), !messages.isEmpty else {
+            return nil
+        }
+
+        var payload: [String: Any] = [
+            "model": metadata.model,
+            "messages": messages,
+            "stream": metadata.action == .streamGenerateContent
+        ]
+        if let system = systemInstructionText(from: object) {
+            payload["system"] = system
+        }
+        applyGenerationConfig(from: object, to: &payload)
+        guard payload["max_tokens"] != nil else {
+            return nil
+        }
+        return payload
+    }
+
+    private func applyGenerationConfig(from object: [String: Any], to payload: inout [String: Any]) {
+        guard let config = object["generationConfig"] as? [String: Any] else { return }
+        if let temperature = config["temperature"] {
+            payload["temperature"] = temperature
+        }
+        if let maxOutputTokens = config["maxOutputTokens"] {
+            payload["max_tokens"] = maxOutputTokens
+        }
+    }
+
+    private func geminiMessages(from object: [String: Any], includeSystemMessage: Bool) -> [[String: String]]? {
+        var messages: [[String: String]] = []
+        if includeSystemMessage, let system = systemInstructionText(from: object) {
+            messages.append(["role": "system", "content": system])
+        }
+
+        guard let contents = object["contents"] as? [[String: Any]] else {
+            return nil
+        }
+        for content in contents {
+            guard let text = textFromParts(content["parts"]), !text.isEmpty else {
+                return nil
+            }
+            let geminiRole = content["role"] as? String ?? "user"
+            messages.append(["role": openAIRole(fromGeminiRole: geminiRole), "content": text])
+        }
+        return messages
+    }
+
+    private func systemInstructionText(from object: [String: Any]) -> String? {
+        guard let systemInstruction = object["systemInstruction"] as? [String: Any] else {
+            return nil
+        }
+        return textFromParts(systemInstruction["parts"])
+    }
+
+    private func textFromParts(_ value: Any?) -> String? {
+        guard let parts = value as? [[String: Any]] else {
+            return nil
+        }
+        let text = parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
+    }
+
+    private func openAIRole(fromGeminiRole role: String) -> String {
+        role == "model" ? "assistant" : role
     }
 }
 
