@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CaptureTiming: Equatable, Sendable {
+public struct CaptureTiming: Codable, Equatable, Sendable {
     public var startedAt: Date
     public var durationMS: Int
 
@@ -10,7 +10,7 @@ public struct CaptureTiming: Equatable, Sendable {
     }
 }
 
-public struct CapturedExchange: Equatable, Sendable {
+public struct CapturedExchange: Codable, Equatable, Sendable {
     public var id: String
     public var host: String
     public var path: String
@@ -92,7 +92,7 @@ public struct CaptureSanitizer: Sendable {
     }
 }
 
-public struct CaptureManifestEntry: Equatable, Sendable {
+public struct CaptureManifestEntry: Codable, Equatable, Sendable {
     public var captureID: String
     public var host: String
     public var path: String
@@ -108,7 +108,7 @@ public struct CaptureManifestEntry: Equatable, Sendable {
     }
 }
 
-public struct CaptureManifest: Equatable, Sendable {
+public struct CaptureManifest: Codable, Equatable, Sendable {
     public var id: String
     public var generatedAt: Date
     public var entries: [CaptureManifestEntry]
@@ -130,4 +130,148 @@ public struct CaptureManifest: Equatable, Sendable {
 
 public struct CapturePipeline: Sendable {
     public init() {}
+}
+
+public struct CaptureFixturePack: Equatable, Sendable {
+    public var manifest: CaptureManifest
+    public var captures: [CapturedExchange]
+
+    public init(manifest: CaptureManifest, captures: [CapturedExchange]) {
+        self.manifest = manifest
+        self.captures = captures
+    }
+}
+
+public enum CaptureFixtureStoreError: Error, Equatable, Sendable {
+    case unsafeManifest([String])
+    case missingCapture(String)
+}
+
+public struct CaptureFixtureStore {
+    private let fileManager: FileManager
+    private let sanitizer: CaptureSanitizer
+
+    public init(fileManager: FileManager = .default, sanitizer: CaptureSanitizer = CaptureSanitizer()) {
+        self.fileManager = fileManager
+        self.sanitizer = sanitizer
+    }
+
+    @discardableResult
+    public func writeSanitizedPack(
+        captures: [CapturedExchange],
+        to directory: URL,
+        manifestID: String,
+        generatedAt: Date = Date()
+    ) throws -> CaptureManifest {
+        try fileManager.createDirectory(at: capturesDirectory(in: directory), withIntermediateDirectories: true)
+
+        var entries: [CaptureManifestEntry] = []
+        for capture in captures {
+            let sanitized = try sanitizer.sanitize(capture)
+            let data = try JSONEncoder.captureFixtureEncoder.encode(sanitized)
+            try data.write(to: captureURL(for: capture.id, in: directory), options: [.atomic])
+            entries.append(.init(
+                captureID: capture.id,
+                host: capture.host,
+                path: capture.path,
+                sanitized: true,
+                durationMS: capture.timing.durationMS
+            ))
+        }
+
+        let manifest = CaptureManifest(id: manifestID, generatedAt: generatedAt, entries: entries)
+        guard manifest.isExportable else {
+            throw CaptureFixtureStoreError.unsafeManifest(manifest.blockingCaptureIDs)
+        }
+        let manifestData = try JSONEncoder.captureFixtureEncoder.encode(manifest)
+        try manifestData.write(to: manifestURL(in: directory), options: [.atomic])
+        return manifest
+    }
+
+    public func readPack(from directory: URL) throws -> CaptureFixturePack {
+        let manifestData = try Data(contentsOf: manifestURL(in: directory))
+        let manifest = try JSONDecoder.captureFixtureDecoder.decode(CaptureManifest.self, from: manifestData)
+        guard manifest.isExportable else {
+            throw CaptureFixtureStoreError.unsafeManifest(manifest.blockingCaptureIDs)
+        }
+        let captures = try manifest.entries.map { entry in
+            let url = captureURL(for: entry.captureID, in: directory)
+            guard fileManager.fileExists(atPath: url.path) else {
+                throw CaptureFixtureStoreError.missingCapture(entry.captureID)
+            }
+            return try JSONDecoder.captureFixtureDecoder.decode(CapturedExchange.self, from: Data(contentsOf: url))
+        }
+        return CaptureFixturePack(manifest: manifest, captures: captures)
+    }
+
+    private func manifestURL(in directory: URL) -> URL {
+        directory.appendingPathComponent("manifest.json")
+    }
+
+    private func capturesDirectory(in directory: URL) -> URL {
+        directory.appendingPathComponent("captures", isDirectory: true)
+    }
+
+    private func captureURL(for id: String, in directory: URL) -> URL {
+        capturesDirectory(in: directory).appendingPathComponent(safeFileName(for: id)).appendingPathExtension("json")
+    }
+
+    private func safeFileName(for id: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let scalars = id.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "_"
+        }
+        let name = String(scalars)
+        return name.isEmpty ? "capture" : name
+    }
+}
+
+public struct ReplayResult: Equatable, Sendable {
+    public var captureID: String
+    public var action: PlannedProxyAction
+
+    public init(captureID: String, action: PlannedProxyAction) {
+        self.captureID = captureID
+        self.action = action
+    }
+}
+
+public struct ReplayHarness: Sendable {
+    private let planner: ProxyRequestPlanner
+
+    public init(planner: ProxyRequestPlanner) {
+        self.planner = planner
+    }
+
+    public func replay(_ capture: CapturedExchange) -> ReplayResult {
+        let request = HTTPRequestEnvelope(
+            method: "POST",
+            path: capture.path,
+            httpVersion: "HTTP/1.1",
+            headers: capture.requestHeaders,
+            body: capture.requestBody
+        )
+        return ReplayResult(captureID: capture.id, action: planner.plan(host: capture.host, request: request))
+    }
+
+    public func replay(_ pack: CaptureFixturePack) -> [ReplayResult] {
+        pack.captures.map(replay)
+    }
+}
+
+private extension JSONEncoder {
+    static var captureFixtureEncoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+}
+
+private extension JSONDecoder {
+    static var captureFixtureDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
 }

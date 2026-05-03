@@ -37,4 +37,84 @@ final class CapturePipelineTests: XCTestCase {
         XCTAssertFalse(manifest.isExportable)
         XCTAssertEqual(manifest.blockingCaptureIDs, ["raw"])
     }
+
+    func testFixtureStoreWritesOnlySanitizedExportablePacks() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AntigravityPorterTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let capture = CapturedExchange(
+            id: "cap/secret",
+            host: "generativelanguage.googleapis.com",
+            path: "/v1beta/models/gemini-2.5-pro:generateContent",
+            requestHeaders: ["Authorization": "Bearer google-token"],
+            requestBody: Data(#"{"api_key":"secret","contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.utf8),
+            responseStatus: 200,
+            responseHeaders: ["Set-Cookie": "sid=secret"],
+            responseBody: Data(#"{"ok":true}"#.utf8),
+            timing: .init(startedAt: Date(timeIntervalSince1970: 3), durationMS: 14)
+        )
+
+        let manifest = try CaptureFixtureStore().writeSanitizedPack(
+            captures: [capture],
+            to: directory,
+            manifestID: "pack",
+            generatedAt: Date(timeIntervalSince1970: 4)
+        )
+        let pack = try CaptureFixtureStore().readPack(from: directory)
+
+        XCTAssertTrue(manifest.isExportable)
+        XCTAssertEqual(pack.manifest.id, "pack")
+        XCTAssertEqual(pack.captures.map(\.id), ["cap/secret"])
+        XCTAssertEqual(pack.captures[0].requestHeaders["Authorization"], "<redacted>")
+        XCTAssertFalse(String(decoding: pack.captures[0].requestBody, as: UTF8.self).contains(#""secret""#))
+    }
+
+    func testReplayHarnessRoutesCapturedFixtureThroughPlanner() throws {
+        let capture = CapturedExchange(
+            id: "gemini-stream",
+            host: "generativelanguage.googleapis.com",
+            path: "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            requestHeaders: ["content-type": "application/json"],
+            requestBody: Data(#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":128}}"#.utf8),
+            responseStatus: 200,
+            responseHeaders: [:],
+            responseBody: Data(),
+            timing: .init(startedAt: Date(timeIntervalSince1970: 5), durationMS: 20)
+        )
+        let harness = ReplayHarness(planner: ProxyRequestPlanner(
+            routingEngine: RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"]))
+        ))
+
+        let result = harness.replay(capture)
+
+        guard case let .routeToCheapRouter(payload, metadata) = result.action else {
+            return XCTFail("expected cheaprouter route, got \(result.action)")
+        }
+        XCTAssertEqual(result.captureID, "gemini-stream")
+        XCTAssertEqual(metadata.model, "gemini-2.5-pro")
+        XCTAssertEqual(payload.endpoint, .chatCompletions)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
+        XCTAssertEqual(json["model"] as? String, "gemini-2.5-pro")
+        XCTAssertEqual(json["max_tokens"] as? Int, 128)
+    }
+
+    func testReplayHarnessKeepsUnsupportedRoutedFixtureFailClosed() {
+        let capture = CapturedExchange(
+            id: "gemini-count",
+            host: "generativelanguage.googleapis.com",
+            path: "/v1beta/models/gemini-2.5-pro:countTokens",
+            requestHeaders: ["content-type": "application/json"],
+            requestBody: Data(#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.utf8),
+            responseStatus: 200,
+            responseHeaders: [:],
+            responseBody: Data(),
+            timing: .init(startedAt: Date(timeIntervalSince1970: 6), durationMS: 22)
+        )
+        let harness = ReplayHarness(planner: ProxyRequestPlanner(
+            routingEngine: RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"]))
+        ))
+
+        let result = harness.replay(capture)
+
+        XCTAssertEqual(result.action, .failClosed(reason: .routingFailed(.unsupportedAction)))
+    }
 }
