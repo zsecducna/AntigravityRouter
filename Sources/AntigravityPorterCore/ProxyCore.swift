@@ -64,6 +64,7 @@ public struct ConnectTargetPolicy: Equatable, Sendable {
 
     private static let targetInferenceHosts: Set<String> = [
         "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com",
         "127.0.0.1",
         "localhost"
     ]

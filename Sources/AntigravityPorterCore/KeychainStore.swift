@@ -65,6 +65,50 @@ public final class InMemoryKeychainStore: KeychainStoring, CustomStringConvertib
     }
 }
 
+public final class MigratingKeychainStore: KeychainStoring, @unchecked Sendable {
+    private let primary: any KeychainStoring
+    private let fallback: any KeychainStoring
+
+    public init(primary: any KeychainStoring, fallback: any KeychainStoring) {
+        self.primary = primary
+        self.fallback = fallback
+    }
+
+    public func data(for key: KeychainSecretKey) throws -> Data? {
+        if let data = try primary.data(for: key) {
+            return data
+        }
+        guard let legacy = try fallback.data(for: key) else {
+            return nil
+        }
+        try primary.setData(legacy, for: key)
+        try fallback.delete(key)
+        return legacy
+    }
+
+    public func setData(_ data: Data, for key: KeychainSecretKey) throws {
+        try primary.setData(data, for: key)
+        try? fallback.delete(key)
+    }
+
+    public func delete(_ key: KeychainSecretKey) throws {
+        var firstError: Error?
+        do {
+            try primary.delete(key)
+        } catch {
+            firstError = error
+        }
+        do {
+            try fallback.delete(key)
+        } catch where firstError == nil {
+            firstError = error
+        }
+        if let firstError {
+            throw firstError
+        }
+    }
+}
+
 public struct SecurityKeychainStore: KeychainStoring, Sendable {
     private let service: String
     private let accessGroup: String?

@@ -181,27 +181,4 @@ final class TranslatorTests: XCTestCase {
         XCTAssertEqual(json["modelVersion"] as? String, "claude-sonnet-4-6")
     }
 
-    func testProviderModelsBuildAntigravityAvailableModelsBody() throws {
-        let body = AntigravityModelsResponseBuilder.responseBody(for: [
-            ProviderModel(id: "claude-sonnet-4-6"),
-            ProviderModel(id: "gpt-5.5"),
-            ProviderModel(id: "gpt-5.5-review"),
-            ProviderModel(id: "gpt-image-2")
-        ])
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let models = try XCTUnwrap(json["models"] as? [String: Any])
-        let claude = try XCTUnwrap(models["claude-sonnet-4-6"] as? [String: Any])
-        let sorts = try XCTUnwrap(json["agentModelSorts"] as? [[String: Any]])
-        let groups = try XCTUnwrap(sorts.first?["groups"] as? [[String: Any]])
-
-        XCTAssertEqual(json["defaultAgentModelId"] as? String, "gpt-5.5")
-        XCTAssertNotNil(models["gpt-5.5"])
-        XCTAssertNil(models["gpt-image-2"])
-        XCTAssertNil(models["gpt-5.5-review"])
-        XCTAssertEqual(claude["modelProvider"] as? String, "MODEL_PROVIDER_ANTHROPIC")
-        XCTAssertEqual(claude["model"] as? String, "MODEL_PLACEHOLDER_CR_1")
-        XCTAssertNotNil((claude["quotaInfo"] as? [String: Any])?["resetTime"])
-        XCTAssertEqual(json["commandModelIds"] as? [String], [])
-        XCTAssertEqual(groups.first?["modelIds"] as? [String], ["claude-sonnet-4-6", "gpt-5.5"])
-    }
 }

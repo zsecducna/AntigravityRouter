@@ -15,7 +15,7 @@ final class HostPolicyTests: XCTestCase {
         let policy = ConnectTargetPolicy.default
 
         XCTAssertEqual(policy.decision(for: "cloudcode-pa.googleapis.com", port: 443), .targetInference)
-        XCTAssertEqual(policy.decision(for: "daily-cloudcode-pa.googleapis.com", port: 443), .blindTunnel)
+        XCTAssertEqual(policy.decision(for: "daily-cloudcode-pa.googleapis.com", port: 443), .targetInference)
         XCTAssertEqual(policy.decision(for: "sandbox-cloudcode-pa.googleapis.com", port: 443), .blindTunnel)
         XCTAssertEqual(policy.decision(for: "generativelanguage.googleapis.com", port: 443), .blindTunnel)
         XCTAssertEqual(policy.decision(for: "oauth2.googleapis.com", port: 443), .blindTunnel)
@@ -48,6 +48,10 @@ final class HostPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             policy.decision(for: "cloudcode-pa.googleapis.com", port: 443, path: "/v1internal:countTokens"),
+            .blindTunnel
+        )
+        XCTAssertEqual(
+            policy.decision(for: "cloudcode-pa.googleapis.com", port: 443, path: "/v1internal:fetchAvailableModels"),
             .blindTunnel
         )
         XCTAssertEqual(

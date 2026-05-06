@@ -9,7 +9,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.localProxyPort, 8877)
         XCTAssertEqual(settings.cheapRouterBaseURL.absoluteString, "https://cheaprouter.uk")
         XCTAssertFalse(settings.customProviderRoutingEnabled)
-        XCTAssertTrue(settings.routedModels.isEmpty)
         XCTAssertTrue(settings.rawHTTPLoggingEnabled)
         XCTAssertFalse(settings.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(settings.logTailLineLimit, 200)
@@ -25,16 +24,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(PorterSettings.directRequestsLabel, "Direct Google model requests")
     }
 
-    func testRouteToggleNormalizesModelIDAndCanDisableRoute() {
-        var settings = PorterSettings.defaults
-
-        settings.setRouteViaCheapRouter(true, for: " claude-sonnet-4-6 ")
-        XCTAssertTrue(settings.routesViaCheapRouter(modelID: "claude-sonnet-4-6"))
-
-        settings.setRouteViaCheapRouter(false, for: "claude-sonnet-4-6")
-        XCTAssertFalse(settings.routesViaCheapRouter(modelID: "claude-sonnet-4-6"))
-    }
-
     func testStoreRoundTripsSettings() throws {
         let storage = InMemorySettingsDataStore()
         let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
@@ -44,7 +33,6 @@ final class SettingsStoreTests: XCTestCase {
             localProxyPort: 9999,
             launchAtLoginEnabled: true,
             customProviderRoutingEnabled: true,
-            routedModels: [" only-custom "],
             rawHTTPLoggingEnabled: false,
             unsafeFullRawHTTPLoggingEnabled: true,
             logTailLineLimit: 50
@@ -60,7 +48,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(loaded.rawHTTPLoggingEnabled)
         XCTAssertTrue(loaded.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(loaded.logTailLineLimit, 50)
-        XCTAssertTrue(loaded.routesViaCheapRouter(modelID: "only-custom"))
     }
 
     func testLogTailLineLimitIsClamped() {
@@ -69,7 +56,6 @@ final class SettingsStoreTests: XCTestCase {
             localProxyHost: "127.0.0.1",
             localProxyPort: 9999,
             launchAtLoginEnabled: false,
-            routedModels: [],
             logTailLineLimit: 1
         )
         let high = PorterSettings(
@@ -77,7 +63,6 @@ final class SettingsStoreTests: XCTestCase {
             localProxyHost: "127.0.0.1",
             localProxyPort: 9999,
             launchAtLoginEnabled: false,
-            routedModels: [],
             logTailLineLimit: 5000
         )
 
@@ -90,6 +75,16 @@ final class SettingsStoreTests: XCTestCase {
         let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
 
         XCTAssertEqual(store.load(), .defaults)
+    }
+
+    func testUnsafeFullRawLoggingIsDisabledForNewLaunch() {
+        var settings = PorterSettings.defaults
+        settings.unsafeFullRawHTTPLoggingEnabled = true
+
+        let sanitized = settings.disablingUnsafeFullRawHTTPLoggingForNewLaunch()
+
+        XCTAssertFalse(sanitized.unsafeFullRawHTTPLoggingEnabled)
+        XCTAssertTrue(settings.unsafeFullRawHTTPLoggingEnabled)
     }
 }
 

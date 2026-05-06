@@ -3,7 +3,7 @@ import XCTest
 
 final class RoutingDecisionTests: XCTestCase {
     func testRoutingDisabledDefaultsDirectForAllModels() {
-        let router = RoutingEngine(config: .init(routedModels: []))
+        let router = RoutingEngine(config: .init())
 
         let decision = router.decision(for: .init(client: .antigravity, model: "new-model", action: .generateContent))
 
@@ -11,7 +11,7 @@ final class RoutingDecisionTests: XCTestCase {
     }
 
     func testRoutingEnabledClaudeModelUsesMessagesEndpoint() {
-        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true))
 
         let decision = router.decision(for: .init(client: .antigravity, model: "claude-sonnet-4", action: .streamGenerateContent))
 
@@ -19,7 +19,7 @@ final class RoutingDecisionTests: XCTestCase {
     }
 
     func testRoutingEnabledNonClaudeModelUsesChatCompletionsEndpoint() {
-        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true))
 
         let decision = router.decision(for: .init(client: .antigravity, model: "gpt-5.5", action: .generateContent))
 
@@ -27,7 +27,7 @@ final class RoutingDecisionTests: XCTestCase {
     }
 
     func testUnsupportedRoutedRequestFailsClosed() {
-        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: [], supportedActions: [.generateContent]))
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, supportedActions: [.generateContent]))
 
         let decision = router.decision(for: .init(client: .antigravity, model: "gpt-5.5", action: .countTokens))
 

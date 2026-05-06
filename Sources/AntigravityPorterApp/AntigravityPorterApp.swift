@@ -8,7 +8,8 @@ private enum PorterRuntimeRegistry {
 
 final class PorterAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let settings = UserDefaultsSettingsStore().load()
+        let store = UserDefaultsSettingsStore()
+        let settings = AntigravityRouterApp.settingsForNewLaunch(store: store)
         PorterRuntimeRegistry.shared.start(settings: settings)
     }
 }
@@ -34,16 +35,13 @@ struct AntigravityRouterApp: App {
     @State private var transparentRoutingFailed = false
     @State private var launchMessage = ""
     @State private var launchFailed = false
+    @State private var unsafeLogConfirmationPending = false
     @State private var launchedAntigravityProcess: Process?
 
     init() {
         let settingsStore = UserDefaultsSettingsStore()
-        let certificateStore = FileKeychainStore(
-            directory: FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
-        )
-        self.certificateAuthority = CertificateAuthority(keychain: certificateStore)
-        let loaded = settingsStore.load()
+        self.certificateAuthority = CertificateAuthority(keychain: Self.certificateAuthorityStore())
+        let loaded = Self.settingsForNewLaunch(store: settingsStore)
         _settings = State(initialValue: loaded)
         _baseURLText = State(initialValue: loaded.cheapRouterBaseURL.absoluteString)
         let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
@@ -222,7 +220,16 @@ struct AntigravityRouterApp: App {
             }
             GridRow {
                 Text("Unsafe full body log")
-                Toggle("", isOn: $settings.unsafeFullRawHTTPLoggingEnabled)
+                Toggle("", isOn: Binding(
+                    get: { settings.unsafeFullRawHTTPLoggingEnabled },
+                    set: { enabled in
+                        if enabled {
+                            unsafeLogConfirmationPending = true
+                        } else {
+                            settings.unsafeFullRawHTTPLoggingEnabled = false
+                        }
+                    }
+                ))
                     .toggleStyle(.switch)
                     .help("Store full HTTP bodies with a size cap; may expose tokens and prompts")
             }
@@ -249,6 +256,16 @@ struct AntigravityRouterApp: App {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .alert("Enable unsafe full body log?", isPresented: $unsafeLogConfirmationPending) {
+            Button("Enable", role: .destructive) {
+                settings.unsafeFullRawHTTPLoggingEnabled = true
+            }
+            Button("Cancel", role: .cancel) {
+                settings.unsafeFullRawHTTPLoggingEnabled = false
+            }
+        } message: {
+            Text("Full prompt and response bodies will be stored in local logs until disabled or the app restarts.")
+        }
     }
 
     private var logTab: some View {
@@ -508,6 +525,27 @@ struct AntigravityRouterApp: App {
         try Data(pem.utf8).write(to: certificateURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: certificateURL.path)
         return certificateURL
+    }
+
+    static func settingsForNewLaunch(store: UserDefaultsSettingsStore) -> PorterSettings {
+        let loaded = store.load()
+        let sanitized = loaded.disablingUnsafeFullRawHTTPLoggingForNewLaunch()
+        if sanitized != loaded {
+            try? store.save(sanitized)
+        }
+        return sanitized
+    }
+
+    private static func certificateAuthorityStore() -> any KeychainStoring {
+        MigratingKeychainStore(
+            primary: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca"),
+            fallback: FileKeychainStore(directory: legacyCertificateAuthorityDirectory())
+        )
+    }
+
+    private static func legacyCertificateAuthorityDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
     }
 }
 

@@ -132,7 +132,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["proxy-authorization": "Basic secret", "content-type": "application/json"],
             body: Data(body.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(routedModels: [])))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init()))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
@@ -153,7 +153,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(body.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: [])))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
@@ -177,7 +177,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(body.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: [])))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
@@ -196,7 +196,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(#"{"model":"gpt-5.5","contents":[]}"#.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: [])))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
@@ -211,7 +211,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(#"{"contents":[]}"#.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(routedModels: ["claude-sonnet-4"])))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init()))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 

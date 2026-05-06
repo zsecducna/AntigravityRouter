@@ -93,29 +93,14 @@ public enum RoutingDecision: Equatable, Sendable {
 
 public struct RoutingEngineConfiguration: Equatable, Sendable {
     public var customProviderRoutingEnabled: Bool
-    public var routedModels: Set<String>
     public var supportedActions: Set<PorterAction>
 
     public init(
         customProviderRoutingEnabled: Bool = false,
-        routedModels: Set<String>,
         supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]
     ) {
         self.customProviderRoutingEnabled = customProviderRoutingEnabled
-        self.routedModels = routedModels
         self.supportedActions = supportedActions
-    }
-
-    public init(
-        customProviderRoutingEnabled: Bool = false,
-        routedModels: [String],
-        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]
-    ) {
-        self.init(
-            customProviderRoutingEnabled: customProviderRoutingEnabled,
-            routedModels: Set(routedModels),
-            supportedActions: supportedActions
-        )
     }
 }
 
@@ -130,14 +115,6 @@ public struct RoutingEngine: Sendable {
         guard config.customProviderRoutingEnabled else { return .googleDirect }
         guard config.supportedActions.contains(metadata.action) else { return .failClosed(reason: .unsupportedAction) }
         return .cheapRouter(endpoint: metadata.model.lowercased().contains("claude") ? .messages : .chatCompletions)
-    }
-
-    private func routesModel(_ model: String) -> Bool {
-        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return config.routedModels.contains { routed in
-            let candidate = routed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return normalized == candidate || normalized.hasPrefix(candidate) || candidate.hasPrefix(normalized)
-        }
     }
 }
 
@@ -515,85 +492,5 @@ public struct ResponseTranslator: Sendable {
         case "content_filter": "SAFETY"
         default: "STOP"
         }
-    }
-}
-
-public enum AntigravityModelsResponseBuilder {
-    public static func responseBody(for models: [ProviderModel]) -> Data {
-        let ids = models.map(\.id)
-        let agentModelIDs = ids.filter(isAgentModelID)
-        let visibleAgentIDs = agentModelIDs.isEmpty ? ids : agentModelIDs
-        let defaultID = defaultAgentModelID(from: visibleAgentIDs)
-        let modelObjects = Dictionary(uniqueKeysWithValues: visibleAgentIDs.enumerated().map { index, id in
-            (id, modelObject(for: id, index: index))
-        })
-        let body: [String: Any] = [
-            "models": modelObjects,
-            "defaultAgentModelId": defaultID,
-            "agentModelSorts": [[
-                "displayName": "Recommended",
-                "groups": [["modelIds": visibleAgentIDs]]
-            ]],
-            "commandModelIds": [],
-            "tabModelIds": [],
-            "imageGenerationModelIds": [],
-            "mqueryModelIds": [],
-            "webSearchModelIds": [],
-            "commitMessageModelIds": [],
-            "experimentIds": [],
-            "tieredModelIds": [:]
-        ]
-        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data(#"{"models":{}}"#.utf8)
-    }
-
-    private static func isAgentModelID(_ id: String) -> Bool {
-        let normalized = id.lowercased()
-        return !normalized.contains("image")
-            && !normalized.contains("embed")
-            && !normalized.contains("audio")
-            && !normalized.contains("tts")
-            && !normalized.hasSuffix("-review")
-    }
-
-    private static func defaultAgentModelID(from ids: [String]) -> String {
-        if ids.contains("gpt-5.5") { return "gpt-5.5" }
-        if let gpt = ids.first(where: { $0.lowercased().hasPrefix("gpt-") }) { return gpt }
-        if let claude = ids.first(where: { $0.lowercased().contains("claude-sonnet") }) { return claude }
-        return ids.first ?? ""
-    }
-
-    private static func modelObject(for id: String, index: Int) -> [String: Any] {
-        [
-            "displayName": id,
-            "maxTokens": 250000,
-            "maxOutputTokens": 64000,
-            "tokenizerType": "LLAMA_WITH_SPECIAL",
-            "quotaInfo": [
-                "remainingFraction": 1,
-                "resetTime": resetTime()
-            ],
-            "model": "MODEL_PLACEHOLDER_CR_\(index + 1)",
-            "apiProvider": apiProvider(for: id),
-            "modelProvider": modelProvider(for: id),
-            "supportsThinking": id.localizedCaseInsensitiveContains("thinking"),
-            "recommended": true,
-            "supportsEstimateTokenCounter": true
-        ]
-    }
-
-    private static func resetTime() -> String {
-        ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 60 * 60))
-    }
-
-    private static func apiProvider(for id: String) -> String {
-        id.localizedCaseInsensitiveContains("claude")
-            ? "API_PROVIDER_ANTHROPIC_VERTEX"
-            : "API_PROVIDER_OPENAI_VERTEX"
-    }
-
-    private static func modelProvider(for id: String) -> String {
-        id.localizedCaseInsensitiveContains("claude")
-            ? "MODEL_PROVIDER_ANTHROPIC"
-            : "MODEL_PROVIDER_OPENAI"
     }
 }

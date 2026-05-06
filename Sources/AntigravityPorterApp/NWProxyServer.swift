@@ -16,12 +16,9 @@ final class NWProxyServer: @unchecked Sendable {
     private let pacScriptProvider: @Sendable () -> String
     private let networkQueue = DispatchQueue(label: "uk.cheaprouter.AntigravityPorter.network.events", attributes: .concurrent)
     private let stateLock = NSLock()
-    private let providerModelsCondition = NSCondition()
     private var listeners: [NWListener] = []
     private var activeConnections: [NWConnection] = []
     private var running = false
-    private var cachedProviderModelsResponse: ProviderModelsResponseCache?
-    private var providerModelsFetchInProgress = false
     private let cheapRouterSession: URLSession
     private let googleSession: URLSession
 
@@ -31,8 +28,6 @@ final class NWProxyServer: @unchecked Sendable {
     private static let connectHeaderTimeout: TimeInterval = 5
     private static let tlsReadTimeout: TimeInterval = 600
     private static let upstreamTimeout: TimeInterval = 600
-    private static let providerModelsTimeout: TimeInterval = 10
-    private static let providerModelsCacheTTL: TimeInterval = 120
     private static let pipeBufferSize = 65536
     private static let reverseProxyHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
 
@@ -336,14 +331,13 @@ final class NWProxyServer: @unchecked Sendable {
             try writeHTTPResponse(response, on: tlsConnection)
         } else {
             let settings = settingsStore.load()
-            let planner = ProxyRequestPlanner(
-                routingEngine: RoutingEngine(
-                    config: RoutingEngineConfiguration(
-                        customProviderRoutingEnabled: settings.customProviderRoutingEnabled,
-                        routedModels: settings.routedModels
+                let planner = ProxyRequestPlanner(
+                    routingEngine: RoutingEngine(
+                        config: RoutingEngineConfiguration(
+                            customProviderRoutingEnabled: settings.customProviderRoutingEnabled
+                        )
                     )
                 )
-            )
             let decision = planner.plan(host: routingHost, request: request)
             switch decision {
             case let .forwardToGoogle(forwardedRequest, metadata):
@@ -582,65 +576,6 @@ final class NWProxyServer: @unchecked Sendable {
         return ResponseTranslator().translate(response: cheapRouterResponse, metadata: metadata)
     }
 
-    private func routeProviderModelsForAntigravity(settings: PorterSettings) throws -> ProxyHTTPResponse {
-        guard let apiKey = try keychainStore.string(for: .cheapRouterAPIKey), !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ProxyHTTPResponse(
-                statusCode: 401,
-                headers: ["content-type": "application/json"],
-                body: Data(#"{"error":{"message":"cheaprouter API key is missing"}}"#.utf8)
-            )
-        }
-        let client = CheapRouterClient(configuration: .init(baseURL: settings.cheapRouterBaseURL, apiKey: apiKey))
-        let urlRequest = client.urlRequest(endpoint: .models, body: Data())
-        if let cached = cachedProviderModelsResponseIfFresh() {
-            eventSink(.log("provider models cache hit models=\(cached.modelCount)"))
-            return cached.response
-        }
-        if !tryStartProviderModelsFetch() {
-            if let waited = waitForProviderModelsFetch() {
-                eventSink(.log("provider models shared fetch hit models=\(waited.modelCount)"))
-                return waited.response
-            }
-            return ProxyHTTPResponse(
-                statusCode: 504,
-                headers: ["content-type": "application/json"],
-                body: Data(#"{"error":{"message":"provider models fetch timed out"}}"#.utf8)
-            )
-        }
-        defer { markProviderModelsFetchFinished() }
-
-        if let cached = cachedProviderModelsResponseIfFresh() {
-            eventSink(.log("provider models cache hit models=\(cached.modelCount)"))
-            return cached.response
-        }
-
-        emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM CHEAPROUTER MODELS REQUEST", request: urlRequest))
-        let raw: (statusCode: Int, headers: [String: String], body: Data)
-        do {
-            raw = try perform(urlRequest, session: cheapRouterSession, timeout: Self.providerModelsTimeout)
-        } catch {
-            return ProxyHTTPResponse(
-                statusCode: 504,
-                headers: ["content-type": "application/json"],
-                body: Data(#"{"error":{"message":"provider models fetch failed"}}"#.utf8)
-            )
-        }
-        emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM CHEAPROUTER MODELS RESPONSE", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
-        guard (200..<300).contains(raw.statusCode),
-              let models = try? CheapRouterClient.parseModelsResponse(raw.body),
-              !models.isEmpty
-        else {
-            return ProxyHTTPResponse(statusCode: raw.statusCode, headers: raw.headers, body: raw.body)
-        }
-        let response = ProxyHTTPResponse(
-            statusCode: 200,
-            headers: ["content-type": "application/json"],
-            body: AntigravityModelsResponseBuilder.responseBody(for: models)
-        )
-        cacheProviderModelsResponse(response, modelCount: models.count)
-        return response
-    }
-
     private func forwardToGoogle(host: String, request: HTTPRequestEnvelope) throws -> ProxyHTTPResponse {
         let upstreamHost = GoogleUpstreamHostPolicy.host(for: host)
         guard let url = URL(string: "https://\(upstreamHost)\(request.path)") else {
@@ -692,50 +627,6 @@ final class NWProxyServer: @unchecked Sendable {
             throw PorterRuntimeError.upstreamTimedOut
         }
         return try box.value?.get() ?? { throw PorterRuntimeError.invalidHTTPResponse }()
-    }
-
-    private func cachedProviderModelsResponseIfFresh() -> ProviderModelsResponseCache? {
-        providerModelsCondition.lock()
-        defer { providerModelsCondition.unlock() }
-        guard let cachedProviderModelsResponse,
-              Date().timeIntervalSince(cachedProviderModelsResponse.createdAt) < Self.providerModelsCacheTTL
-        else { return nil }
-        return cachedProviderModelsResponse
-    }
-
-    private func waitForProviderModelsFetch() -> ProviderModelsResponseCache? {
-        providerModelsCondition.lock()
-        defer { providerModelsCondition.unlock() }
-        guard providerModelsFetchInProgress else { return nil }
-        let deadline = Date().addingTimeInterval(Self.providerModelsTimeout)
-        while providerModelsFetchInProgress {
-            guard providerModelsCondition.wait(until: deadline) else { return nil }
-        }
-        guard let cachedProviderModelsResponse,
-              Date().timeIntervalSince(cachedProviderModelsResponse.createdAt) < Self.providerModelsCacheTTL
-        else { return nil }
-        return cachedProviderModelsResponse
-    }
-
-    private func tryStartProviderModelsFetch() -> Bool {
-        providerModelsCondition.lock()
-        defer { providerModelsCondition.unlock() }
-        guard !providerModelsFetchInProgress else { return false }
-        providerModelsFetchInProgress = true
-        return true
-    }
-
-    private func markProviderModelsFetchFinished() {
-        providerModelsCondition.lock()
-        providerModelsFetchInProgress = false
-        providerModelsCondition.broadcast()
-        providerModelsCondition.unlock()
-    }
-
-    private func cacheProviderModelsResponse(_ response: ProxyHTTPResponse, modelCount: Int) {
-        providerModelsCondition.lock()
-        cachedProviderModelsResponse = ProviderModelsResponseCache(response: response, modelCount: modelCount, createdAt: Date())
-        providerModelsCondition.unlock()
     }
 
     private func requestShapeSummary(_ body: Data) -> String {
@@ -1052,7 +943,9 @@ private final class TLSTerminationServer: @unchecked Sendable {
     }
 
     func start() throws {
-        let listener = try NWListener(using: makeParameters(), on: 0)
+        let params = try makeParameters()
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: 0)!)
+        let listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else {
                 connection.cancel()
@@ -1149,12 +1042,6 @@ private enum NetworkTunnelKind: String {
 private enum NetworkTunnelDirection {
     case clientToUpstream
     case upstreamToClient
-}
-
-private struct ProviderModelsResponseCache: Sendable {
-    var response: ProxyHTTPResponse
-    var modelCount: Int
-    var createdAt: Date
 }
 
 private final class NetworkTunnelMetrics: @unchecked Sendable {

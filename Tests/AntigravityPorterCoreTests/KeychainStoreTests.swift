@@ -50,4 +50,27 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertNil(try store.string(for: .cheapRouterAPIKey))
         XCTAssertEqual(try store.data(for: .certificateAuthorityPrivateKey), Data([0xCA, 0xFE]))
     }
+
+    func testMigratingKeychainStoreCopiesFallbackSecretToPrimaryAndDeletesFallback() throws {
+        let primary = InMemoryKeychainStore()
+        let fallback = InMemoryKeychainStore(storage: [.certificateAuthorityPrivateKey: Data("legacy-key".utf8)])
+        let store = MigratingKeychainStore(primary: primary, fallback: fallback)
+
+        let migrated = try store.data(for: .certificateAuthorityPrivateKey)
+
+        XCTAssertEqual(migrated, Data("legacy-key".utf8))
+        XCTAssertEqual(try primary.data(for: .certificateAuthorityPrivateKey), Data("legacy-key".utf8))
+        XCTAssertNil(try fallback.data(for: .certificateAuthorityPrivateKey))
+    }
+
+    func testMigratingKeychainStoreDeletesPrimaryAndFallbackSecrets() throws {
+        let primary = InMemoryKeychainStore(storage: [.certificateAuthorityMetadata: Data("primary".utf8)])
+        let fallback = InMemoryKeychainStore(storage: [.certificateAuthorityMetadata: Data("fallback".utf8)])
+        let store = MigratingKeychainStore(primary: primary, fallback: fallback)
+
+        try store.delete(.certificateAuthorityMetadata)
+
+        XCTAssertNil(try primary.data(for: .certificateAuthorityMetadata))
+        XCTAssertNil(try fallback.data(for: .certificateAuthorityMetadata))
+    }
 }

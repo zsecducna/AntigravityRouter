@@ -81,7 +81,7 @@ final class CapturePipelineTests: XCTestCase {
             timing: .init(startedAt: Date(timeIntervalSince1970: 5), durationMS: 20)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true))
         ))
 
         let result = harness.replay(capture)
@@ -110,7 +110,7 @@ final class CapturePipelineTests: XCTestCase {
             timing: .init(startedAt: Date(timeIntervalSince1970: 6), durationMS: 22)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true))
         ))
 
         let result = harness.replay(capture)

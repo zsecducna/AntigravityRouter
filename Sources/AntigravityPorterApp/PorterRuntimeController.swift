@@ -18,13 +18,14 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     private var activeProxyPort = 8877
     private let settingsStore = UserDefaultsSettingsStore()
     private let keychainStore = SecurityKeychainStore()
-    private let certificateStore = FileKeychainStore(
-        directory: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
-    )
+    private let certificateStore: any KeychainStoring
+    private let logDirectory: URL
     private lazy var certificateAuthority = CertificateAuthority(keychain: certificateStore)
 
-    init() {}
+    init(logDirectory: URL = PorterRuntimeController.defaultLogDirectory, certificateStore: (any KeychainStoring)? = nil) {
+        self.logDirectory = logDirectory
+        self.certificateStore = certificateStore ?? Self.certificateAuthorityStore()
+    }
 
     func setProxyEnabled(_ enabled: Bool, settings: PorterSettings) {
         if enabled {
@@ -117,10 +118,11 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     }
 
     func truncateLogs() {
-        for file in Self.logFiles {
+        for file in logFiles {
             do {
-                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try hardenLogDirectory()
                 try Data().write(to: file, options: .atomic)
+                try hardenLogFile(file)
             } catch {
                 print("truncate log file failed: \(file.path): \(error)")
                 fflush(stdout)
@@ -196,20 +198,21 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     }
 
     private func appendRuntimeLogFile(_ line: String) {
-        let directory = Self.logDirectory
+        let directory = logDirectory
         let file = directory.appendingPathComponent("runtime.log")
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try hardenLogDirectory()
             try rotateLogIfNeeded(file)
             let data = Data((line + "\n").utf8)
             if FileManager.default.fileExists(atPath: file.path) {
                 let handle = try FileHandle(forWritingTo: file)
+                defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
-                try handle.close()
             } else {
                 try data.write(to: file, options: .atomic)
             }
+            try hardenLogFile(file)
         } catch {
             print("runtime log file failed: \(error)")
             fflush(stdout)
@@ -220,20 +223,21 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     }
 
     private func appendRawHTTPLogFile(_ line: String) {
-        let directory = Self.logDirectory
+        let directory = logDirectory
         let file = directory.appendingPathComponent("raw-http.log")
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try hardenLogDirectory()
             try rotateLogIfNeeded(file)
             let data = Data((line + "\n").utf8)
             if FileManager.default.fileExists(atPath: file.path) {
                 let handle = try FileHandle(forWritingTo: file)
+                defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
-                try handle.close()
             } else {
                 try data.write(to: file, options: .atomic)
             }
+            try hardenLogFile(file)
         } catch {
             print("raw HTTP log file failed: \(error)")
             fflush(stdout)
@@ -250,6 +254,16 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
             try manager.removeItem(at: rotated)
         }
         try manager.moveItem(at: file, to: rotated)
+        try hardenLogFile(rotated)
+    }
+
+    private func hardenLogDirectory() throws {
+        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: logDirectory.path)
+    }
+
+    private func hardenLogFile(_ file: URL) throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     private func updateStatus(_ body: @escaping @Sendable (inout PorterAppStatus) -> Void) {
@@ -258,16 +272,28 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private static var logDirectory: URL {
+    private static var defaultLogDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/AntigravityPorter", isDirectory: true)
     }
 
-    private static var logFiles: [URL] {
+    private var logFiles: [URL] {
         [
             logDirectory.appendingPathComponent("runtime.log"),
             logDirectory.appendingPathComponent("raw-http.log")
         ]
+    }
+
+    private static func certificateAuthorityStore() -> any KeychainStoring {
+        MigratingKeychainStore(
+            primary: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca"),
+            fallback: FileKeychainStore(directory: legacyCertificateAuthorityDirectory())
+        )
+    }
+
+    private static func legacyCertificateAuthorityDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
     }
 }
 
@@ -419,22 +445,6 @@ private final class GoogleUpstreamResolver: @unchecked Sendable {
     private static func isIPv4Address(_ value: String) -> Bool {
         var addr = in_addr()
         return inet_pton(AF_INET, value, &addr) == 1
-    }
-}
-
-private final class GoogleUpstreamSessionDelegate: NSObject, URLSessionDelegate {
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust
-        else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
 
