@@ -243,10 +243,10 @@ struct AntigravityRouterApp: App {
             GridRow {
                 Text("CA certificate")
                 VStack(alignment: .leading, spacing: 6) {
-                    Button("Export/Open", systemImage: "key") {
+                    Button("Install CA", systemImage: "key") {
                         installCertificate()
                     }
-                    .help("Export and open CA certificate")
+                    .help("Install and trust the CA certificate in the System keychain")
                     if !certificateInstallMessage.isEmpty {
                         Text(certificateInstallMessage)
                             .font(.caption)
@@ -483,13 +483,22 @@ struct AntigravityRouterApp: App {
         do {
             let certificateDER = try certificateAuthority.exportSigningIdentityDER()
             let certificateURL = try writeCertificateForTrustSetup(certificateDER)
-            guard NSWorkspace.shared.open(certificateURL) else {
-                certificateInstallFailed = true
-                certificateInstallMessage = "Open failed"
-                return
-            }
             certificateInstallFailed = false
-            certificateInstallMessage = "Opened CA cert: \(certificateURL.lastPathComponent)"
+            certificateInstallMessage = "Requesting admin approval..."
+            Task.detached {
+                do {
+                    try CertificateTrustInstaller().installAndTrust(certificateURL: certificateURL)
+                    await MainActor.run {
+                        certificateInstallFailed = false
+                        certificateInstallMessage = "CA installed and trusted"
+                    }
+                } catch {
+                    await MainActor.run {
+                        certificateInstallFailed = true
+                        certificateInstallMessage = "Install failed: \(error.localizedDescription)"
+                    }
+                }
+            }
         } catch {
             certificateInstallFailed = true
             certificateInstallMessage = "Install failed: \(error.localizedDescription)"

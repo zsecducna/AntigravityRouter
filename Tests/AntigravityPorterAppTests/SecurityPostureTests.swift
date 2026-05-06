@@ -68,6 +68,26 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains("setRouteViaCheapRouter"))
     }
 
+    func testCAInstallButtonInstallsTrustInsteadOfOpeningCertificate() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"Button("Install CA""#))
+        XCTAssertTrue(source.contains("Install and trust the CA certificate in the System keychain"))
+        XCTAssertFalse(source.contains(#"Button("Export/Open""#))
+        XCTAssertFalse(source.contains("NSWorkspace.shared.open(certificateURL)"))
+    }
+
+    func testCertificateTrustInstallerUsesSystemTrustRootCommand() {
+        let script = CertificateTrustInstaller.installScript(
+            certificateURL: URL(fileURLWithPath: "/tmp/Antigravity Router's CA.cer")
+        )
+
+        XCTAssertTrue(script.contains("/usr/bin/security delete-certificate -Z"))
+        XCTAssertTrue(script.contains("/usr/bin/security add-trusted-cert -d -r trustRoot -k \"$system_keychain\" \"$cert_path\""))
+        XCTAssertTrue(script.contains(#"system_keychain="/Library/Keychains/System.keychain""#))
+        XCTAssertTrue(script.contains(#"cert_path='/tmp/Antigravity Router'\''s CA.cer'"#))
+    }
+
     private func packageRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
