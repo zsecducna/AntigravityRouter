@@ -72,20 +72,29 @@ final class SecurityPostureTests: XCTestCase {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
         XCTAssertTrue(source.contains(#"Button("Install CA""#))
-        XCTAssertTrue(source.contains("Install and trust the CA certificate in the System keychain"))
+        XCTAssertTrue(source.contains("Install and trust the CA certificate for this user"))
+        XCTAssertTrue(source.contains("Requesting trust approval..."))
         XCTAssertFalse(source.contains(#"Button("Export/Open""#))
         XCTAssertFalse(source.contains("NSWorkspace.shared.open(certificateURL)"))
+        let installCertificateRange = try XCTUnwrap(source.range(of: "private func installCertificate()"))
+        let writeCertificateRange = try XCTUnwrap(source.range(of: "private func writeCertificateForTrustSetup"))
+        let installCertificateBody = String(source[installCertificateRange.lowerBound..<writeCertificateRange.lowerBound])
+        XCTAssertFalse(installCertificateBody.contains("Task.detached"))
     }
 
-    func testCertificateTrustInstallerUsesSystemTrustRootCommand() {
-        let script = CertificateTrustInstaller.installScript(
-            certificateURL: URL(fileURLWithPath: "/tmp/Antigravity Router's CA.cer")
-        )
+    func testCertificateTrustInstallerUsesNativeUserTrustSettings() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/CertificateTrustInstaller.swift"))
 
-        XCTAssertTrue(script.contains("/usr/bin/security delete-certificate -Z"))
-        XCTAssertTrue(script.contains("/usr/bin/security add-trusted-cert -d -r trustRoot -k \"$system_keychain\" \"$cert_path\""))
-        XCTAssertTrue(script.contains(#"system_keychain="/Library/Keychains/System.keychain""#))
-        XCTAssertTrue(script.contains(#"cert_path='/tmp/Antigravity Router'\''s CA.cer'"#))
+        XCTAssertTrue(source.contains("protocol CertificateTrustManaging"))
+        XCTAssertTrue(source.contains("removeExistingCertificates"))
+        XCTAssertTrue(source.contains("SecTrustSettingsSetTrustSettings"))
+        XCTAssertTrue(source.contains("SecTrustSettingsDomain.user"))
+        XCTAssertTrue(source.contains("SecPolicyCreateSSL(true, nil)"))
+        XCTAssertTrue(source.contains("SecTrustSettingsResult.trustRoot"))
+        XCTAssertFalse(source.contains("SecTrustSettingsDomain.user,\n            nil"))
+        XCTAssertFalse(source.contains("/usr/bin/osascript"))
+        XCTAssertFalse(source.contains("with administrator privileges"))
+        XCTAssertFalse(source.contains("System.keychain"))
     }
 
     private func packageRoot() -> URL {

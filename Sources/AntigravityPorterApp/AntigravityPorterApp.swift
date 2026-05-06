@@ -6,11 +6,19 @@ private enum PorterRuntimeRegistry {
     static let shared = PorterRuntimeController()
 }
 
+@MainActor
+private enum AppUpdateRegistry {
+    static let shared = AppUpdateController()
+}
+
 final class PorterAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let store = UserDefaultsSettingsStore()
         let settings = AntigravityRouterApp.settingsForNewLaunch(store: store)
         PorterRuntimeRegistry.shared.start(settings: settings)
+        Task { @MainActor in
+            AppUpdateRegistry.shared.startAutomaticChecks()
+        }
     }
 }
 
@@ -21,6 +29,7 @@ struct AntigravityRouterApp: App {
     private let certificateAuthority: CertificateAuthority
     @NSApplicationDelegateAdaptor(PorterAppDelegate.self) private var appDelegate
     @StateObject private var runtime = PorterRuntimeRegistry.shared
+    @StateObject private var updater = AppUpdateRegistry.shared
     @State private var settings: PorterSettings
     @State private var selectedTab = PorterTab.status
     @State private var providerModels: [ProviderModel] = []
@@ -82,6 +91,8 @@ struct AntigravityRouterApp: App {
             ))
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
                 statusRow("Mode", runtime.status.proxyEnabled ? "listening" : "off")
+                statusRow("App version", updater.currentVersionDisplay)
+                statusRow("Updates", updater.statusMessage)
                 statusRow("Custom provider", settings.customProviderRoutingEnabled ? "enabled" : "disabled")
                 statusRow(PorterSettings.proxyListenLabel, "\(settings.localProxyHost):\(settings.localProxyPort)")
                 statusRow("cheaprouter.uk", runtime.status.cheapRouterReachable ? "reachable" : "unchecked")
@@ -93,6 +104,13 @@ struct AntigravityRouterApp: App {
                 if let lastError = runtime.status.lastError {
                     statusRow("Last error", lastError)
                 }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Button("Check for Updates", systemImage: "arrow.down.circle") {
+                    updater.checkNow(forceOpen: true)
+                }
+                .help("Check GitHub releases now; automatic checks run every hour")
+                .disabled(updater.isChecking)
             }
             VStack(alignment: .leading, spacing: 6) {
                 Button(
@@ -246,7 +264,7 @@ struct AntigravityRouterApp: App {
                     Button("Install CA", systemImage: "key") {
                         installCertificate()
                     }
-                    .help("Install and trust the CA certificate in the System keychain")
+                    .help("Install and trust the CA certificate for this user")
                     if !certificateInstallMessage.isEmpty {
                         Text(certificateInstallMessage)
                             .font(.caption)
@@ -484,10 +502,10 @@ struct AntigravityRouterApp: App {
             let certificateDER = try certificateAuthority.exportSigningIdentityDER()
             let certificateURL = try writeCertificateForTrustSetup(certificateDER)
             certificateInstallFailed = false
-            certificateInstallMessage = "Requesting admin approval..."
-            Task.detached {
+            certificateInstallMessage = "Requesting trust approval..."
+            Task {
                 do {
-                    try CertificateTrustInstaller().installAndTrust(certificateURL: certificateURL)
+                    try await CertificateTrustInstaller().installAndTrust(certificateURL: certificateURL)
                     await MainActor.run {
                         certificateInstallFailed = false
                         certificateInstallMessage = "CA installed and trusted"
