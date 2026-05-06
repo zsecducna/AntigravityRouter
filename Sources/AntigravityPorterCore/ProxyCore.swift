@@ -17,17 +17,77 @@ public struct HostPolicy: Equatable, Sendable {
             return .blindTunnel
         }
         guard let path else { return .blindTunnel }
-        if ["cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "sandbox-cloudcode-pa.googleapis.com"].contains(normalizedHost) {
+        if Self.antigravityInferenceHosts.contains(normalizedHost) {
             return path.contains(":generateContent")
-                || path.contains(":streamGenerateContent")
-                || path.contains(":countTokens") ? .intercept : .blindTunnel
-        }
-        if normalizedHost == "generativelanguage.googleapis.com" {
-            return path.contains(":generateContent")
-                || path.contains(":streamGenerateContent")
-                || path.contains(":countTokens") ? .intercept : .blindTunnel
+                || path.contains(":streamGenerateContent") ? .intercept : .blindTunnel
         }
         return .blindTunnel
+    }
+
+    private static let antigravityInferenceHosts: Set<String> = [
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com",
+        "127.0.0.1",
+        "localhost"
+    ]
+}
+
+public enum ConnectTargetPolicyDecision: Equatable, Sendable {
+    case targetInference
+    case blindTunnel
+    case reject
+}
+
+public struct ConnectTargetPolicy: Equatable, Sendable {
+    public static let `default` = ConnectTargetPolicy()
+
+    public init() {}
+
+    public func decision(for host: String, port: Int) -> ConnectTargetPolicyDecision {
+        guard port == 443 else { return .reject }
+        let normalizedHost = normalize(host)
+        if Self.excludedHosts.contains(normalizedHost) {
+            return .blindTunnel
+        }
+        if Self.targetInferenceHosts.contains(normalizedHost) {
+            return .targetInference
+        }
+        return .blindTunnel
+    }
+
+    private func normalize(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+    }
+
+    private static let targetInferenceHosts: Set<String> = [
+        "cloudcode-pa.googleapis.com",
+        "127.0.0.1",
+        "localhost"
+    ]
+
+    private static let excludedHosts: Set<String> = [
+        "oauth2.googleapis.com",
+        "accounts.google.com",
+        "www.googleapis.com",
+        "cheaprouter.uk"
+    ]
+}
+
+public enum GoogleUpstreamHostPolicy {
+    public static func host(for originalHost: String) -> String {
+        normalize(originalHost) == "cloudcode-pa.googleapis.com"
+            ? "daily-cloudcode-pa.googleapis.com"
+            : originalHost
+    }
+
+    private static func normalize(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 }
 
@@ -51,6 +111,79 @@ public enum ProxyProtocolGate {
     public static func decision(for alpn: ProxyALPN, hostDecision: HostPolicyDecision) -> ProxyProtocolDecision {
         guard hostDecision == .intercept else { return .blindTunnel }
         return alpn == .http1_1 ? .terminateTLS : .failClosed(reason: .unsupportedALPN(alpn))
+    }
+}
+
+public enum TLSClientHelloParser {
+    public static func serverName(from data: Data) -> String? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 5,
+              bytes[0] == 0x16,
+              bytes[1] == 0x03
+        else { return nil }
+
+        let recordLength = Int(bytes[3]) << 8 | Int(bytes[4])
+        guard bytes.count >= min(recordLength + 5, bytes.count),
+              bytes.count >= 9,
+              bytes[5] == 0x01
+        else { return nil }
+
+        var index = 9
+        guard bytes.count >= index + 2 + 32 else { return nil }
+        index += 2 + 32
+
+        guard bytes.count >= index + 1 else { return nil }
+        let sessionIDLength = Int(bytes[index])
+        index += 1 + sessionIDLength
+
+        guard bytes.count >= index + 2 else { return nil }
+        let cipherSuitesLength = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+        index += 2 + cipherSuitesLength
+
+        guard bytes.count >= index + 1 else { return nil }
+        let compressionMethodsLength = Int(bytes[index])
+        index += 1 + compressionMethodsLength
+
+        guard bytes.count >= index + 2 else { return nil }
+        let extensionsLength = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+        index += 2
+        let extensionsEnd = index + extensionsLength
+        guard bytes.count >= extensionsEnd else { return nil }
+
+        while index + 4 <= extensionsEnd {
+            let type = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+            let length = Int(bytes[index + 2]) << 8 | Int(bytes[index + 3])
+            index += 4
+            guard index + length <= extensionsEnd else { return nil }
+            if type == 0 {
+                return serverName(fromSNIExtension: bytes[index..<index + length])
+            }
+            index += length
+        }
+        return nil
+    }
+
+    private static func serverName(fromSNIExtension slice: ArraySlice<UInt8>) -> String? {
+        let bytes = Array(slice)
+        guard bytes.count >= 5 else { return nil }
+        let listLength = Int(bytes[0]) << 8 | Int(bytes[1])
+        guard bytes.count >= 2 + listLength else { return nil }
+        var index = 2
+        let end = 2 + listLength
+        while index + 3 <= end {
+            let nameType = bytes[index]
+            let nameLength = Int(bytes[index + 1]) << 8 | Int(bytes[index + 2])
+            index += 3
+            guard index + nameLength <= end else { return nil }
+            if nameType == 0 {
+                let name = String(decoding: bytes[index..<index + nameLength], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                return name.isEmpty ? nil : name
+            }
+            index += nameLength
+        }
+        return nil
     }
 }
 
@@ -84,6 +217,7 @@ public enum HTTPRequestParseError: Error, Equatable, Sendable {
     case incomplete
     case malformedRequestLine(String)
     case invalidContentLength(String)
+    case invalidChunkedBody(String)
 }
 
 public enum HTTPRequestParser {
@@ -121,7 +255,9 @@ public enum HTTPRequestParser {
 
         let rawBody = data[delimiterRange.upperBound...]
         let body: Data
-        if let contentLength = headers["content-length"] {
+        if headers["transfer-encoding"]?.lowercased().split(separator: ",").contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "chunked" }) == true {
+            body = try decodeChunkedBody(Data(rawBody)).body
+        } else if let contentLength = headers["content-length"] {
             guard let expectedLength = Int(contentLength), expectedLength >= 0 else {
                 throw HTTPRequestParseError.invalidContentLength(contentLength)
             }
@@ -134,6 +270,77 @@ public enum HTTPRequestParser {
         }
 
         return HTTPRequestEnvelope(method: parts[0], path: parts[1], httpVersion: parts[2], headers: headers, body: body)
+    }
+
+    public static func decodeChunkedBody(_ data: Data) throws -> (body: Data, consumedBytes: Int) {
+        let bytes = [UInt8](data)
+        var index = 0
+        var decoded = Data()
+
+        while true {
+            guard let lineEnd = crlfIndex(in: bytes, startingAt: index) else {
+                throw HTTPRequestParseError.incomplete
+            }
+            guard let line = String(bytes: bytes[index..<lineEnd], encoding: .utf8) else {
+                throw HTTPRequestParseError.invalidChunkedBody("chunk-size-not-utf8")
+            }
+            let sizeText = line
+                .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+                .first
+                .map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !sizeText.isEmpty, let size = Int(sizeText, radix: 16), size >= 0 else {
+                throw HTTPRequestParseError.invalidChunkedBody("invalid-chunk-size")
+            }
+
+            index = lineEnd + 2
+            if size == 0 {
+                guard let trailersEnd = chunkTrailersEnd(in: bytes, startingAt: index) else {
+                    throw HTTPRequestParseError.incomplete
+                }
+                return (decoded, trailersEnd)
+            }
+
+            guard bytes.count >= index + size + 2 else {
+                throw HTTPRequestParseError.incomplete
+            }
+            decoded.append(contentsOf: bytes[index..<index + size])
+            index += size
+            guard bytes[index] == 13, bytes[index + 1] == 10 else {
+                throw HTTPRequestParseError.invalidChunkedBody("missing-chunk-terminator")
+            }
+            index += 2
+        }
+    }
+
+    private static func crlfIndex(in bytes: [UInt8], startingAt start: Int) -> Int? {
+        guard start < bytes.count else { return nil }
+        var index = start
+        while index + 1 < bytes.count {
+            if bytes[index] == 13, bytes[index + 1] == 10 {
+                return index
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    private static func chunkTrailersEnd(in bytes: [UInt8], startingAt start: Int) -> Int? {
+        guard bytes.count >= start + 2 else { return nil }
+        if bytes[start] == 13, bytes[start + 1] == 10 {
+            return start + 2
+        }
+        var index = start
+        while index + 3 < bytes.count {
+            if bytes[index] == 13,
+               bytes[index + 1] == 10,
+               bytes[index + 2] == 13,
+               bytes[index + 3] == 10 {
+                return index + 4
+            }
+            index += 1
+        }
+        return nil
     }
 }
 

@@ -49,7 +49,7 @@ public final class CertificateAuthority {
         public let authorityID: UUID
         public let generation: Int
         public let certificateDER: Data
-        let privateKeyDER: Data
+        public let privateKeyDER: Data
     }
 
     public struct RotationResult: Equatable, Sendable {
@@ -162,11 +162,18 @@ public final class CertificateAuthority {
         try loadOrCreate().identity.certificateDER
     }
 
+    #if canImport(Security)
+    public func leafSecIdentity(for hostname: String, policy: LeafPolicy) throws -> SecIdentity {
+        let leaf = try leafIdentity(for: hostname, policy: policy)
+        return try Self.upsertLeafSecIdentity(leaf)
+    }
+    #endif
+
     private func createIdentity() throws -> Identity {
         let keyPair = try keyGenerator.makeKeyPair()
         let id = UUID()
         let createdAt = Date()
-        let commonName = "AntigravityPorter Local CA"
+        let commonName = "AntigravityRouter Local CA"
         let certificateDER = try X509CertificateFactory.makeSelfSignedCACertificate(
             id: id,
             commonName: commonName,
@@ -186,6 +193,19 @@ public final class CertificateAuthority {
         try keychain.setData(keyPair.privateKeyDER, for: .certificateAuthorityPrivateKey)
         return identity
     }
+
+    #if canImport(Security)
+    private static func upsertLeafSecIdentity(_ leaf: LeafIdentity) throws -> SecIdentity {
+        guard let certificate = SecCertificateCreateWithData(nil, leaf.certificateDER as CFData) else {
+            throw CertificateAuthorityError.cryptographicOperationFailed("import-leaf-certificate")
+        }
+        let privateKey = try SecurityRSAKeyPairGenerator.privateKey(from: leaf.privateKeyDER, keySizeBits: 2048)
+        guard let identity = SecIdentityCreate(nil, certificate, privateKey) else {
+            throw CertificateAuthorityError.cryptographicOperationFailed("create-leaf-identity")
+        }
+        return identity
+    }
+    #endif
 
     private func persist(identity: Identity) throws {
         let data = try JSONEncoder().encode(identity)
@@ -354,7 +374,7 @@ enum X509CertificateFactory {
             x509Extension(oid: [2, 5, 29, 19], critical: true, value: DER.sequence([])),
             x509Extension(oid: [2, 5, 29, 15], critical: true, value: DER.bitString(Data([0xA0]), unusedBits: 5)),
             x509Extension(oid: [2, 5, 29, 37], critical: false, value: DER.sequence([DER.oid([1, 3, 6, 1, 5, 5, 7, 3, 1])])),
-            x509Extension(oid: [2, 5, 29, 17], critical: false, value: DER.sequence([DER.contextSpecificPrimitive(tag: 2, Data(hostname.utf8))]))
+            x509Extension(oid: [2, 5, 29, 17], critical: false, value: DER.sequence([Self.subjectAltName(hostname: hostname)]))
         ]))
         let tbsCertificate = DER.sequence([
             DER.explicit(tag: 0, DER.integer(2)),
@@ -399,6 +419,24 @@ enum X509CertificateFactory {
         }
         elements.append(DER.octetString(value))
         return DER.sequence(elements)
+    }
+
+    private static func subjectAltName(hostname: String) -> Data {
+        if let ipv4Bytes = parseIPv4(hostname) {
+            return DER.contextSpecificPrimitive(tag: 7, Data(ipv4Bytes))
+        }
+        return DER.contextSpecificPrimitive(tag: 2, Data(hostname.utf8))
+    }
+
+    private static func parseIPv4(_ string: String) -> [UInt8]? {
+        let parts = string.split(separator: ".")
+        guard parts.count == 4 else { return nil }
+        var bytes = [UInt8]()
+        for part in parts {
+            guard let value = UInt8(part) else { return nil }
+            bytes.append(value)
+        }
+        return bytes
     }
 
     private static func serialBytes(seed: String) -> Data {

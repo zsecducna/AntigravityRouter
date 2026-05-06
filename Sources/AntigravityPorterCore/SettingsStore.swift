@@ -1,38 +1,17 @@
 import Foundation
 
-public enum KnownModelSource: String, Codable, Equatable, Sendable {
-    case builtIn
-    case seenInTraffic
-    case manual
-}
-
-public struct KnownModel: Codable, Equatable, Identifiable, Sendable {
-    public var id: String
-    public var source: KnownModelSource
-    public var firstSeenAt: Date?
-
-    public init(id: String, source: KnownModelSource, firstSeenAt: Date? = nil) {
-        self.id = id
-        self.source = source
-        self.firstSeenAt = firstSeenAt
-    }
-}
-
 public struct PorterSettings: Codable, Equatable, Sendable {
     public static let defaultProxyHost = "127.0.0.1"
     public static let defaultProxyPort = 8877
     public static let defaultCheapRouterBaseURL = URL(string: "https://cheaprouter.uk")!
-
-    public static let builtInModelIDs = [
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-1.5-flash",
-        "claude-opus-4",
-        "claude-sonnet-4",
-        "claude-haiku-4"
-    ]
+    public static let routingControlLabel = "Local proxy listener"
+    public static let proxyListenLabel = "Local proxy"
+    public static let proxyConnectsLabel = "Proxy CONNECTs today"
+    public static let targetInferenceConnectsLabel = "Target Google API CONNECTs"
+    public static let otherHTTPSConnectsLabel = "Other HTTPS CONNECTs"
+    public static let routedRequestsLabel = "Routed model requests"
+    public static let directRequestsLabel = "Direct Google model requests"
+    public static let defaultLogTailLineLimit = 200
 
     public static var defaults: PorterSettings {
         PorterSettings(
@@ -40,8 +19,11 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             localProxyHost: defaultProxyHost,
             localProxyPort: defaultProxyPort,
             launchAtLoginEnabled: false,
-            knownModels: builtInModelIDs.map { KnownModel(id: $0, source: .builtIn) },
-            routedModels: []
+            customProviderRoutingEnabled: false,
+            routedModels: [],
+            rawHTTPLoggingEnabled: true,
+            unsafeFullRawHTTPLoggingEnabled: false,
+            logTailLineLimit: defaultLogTailLineLimit
         )
     }
 
@@ -49,80 +31,81 @@ public struct PorterSettings: Codable, Equatable, Sendable {
     public var localProxyHost: String
     public var localProxyPort: Int
     public var launchAtLoginEnabled: Bool
-    public var knownModels: [KnownModel]
+    public var customProviderRoutingEnabled: Bool
     public var routedModels: Set<String>
+    public var rawHTTPLoggingEnabled: Bool
+    public var unsafeFullRawHTTPLoggingEnabled: Bool
+    public var logTailLineLimit: Int
 
     public init(
         cheapRouterBaseURL: URL,
         localProxyHost: String,
         localProxyPort: Int,
         launchAtLoginEnabled: Bool,
-        knownModels: [KnownModel],
-        routedModels: Set<String>
+        customProviderRoutingEnabled: Bool = false,
+        routedModels: Set<String>,
+        rawHTTPLoggingEnabled: Bool = true,
+        unsafeFullRawHTTPLoggingEnabled: Bool = false,
+        logTailLineLimit: Int = defaultLogTailLineLimit
     ) {
         self.cheapRouterBaseURL = cheapRouterBaseURL
         self.localProxyHost = localProxyHost
         self.localProxyPort = localProxyPort
         self.launchAtLoginEnabled = launchAtLoginEnabled
-        self.knownModels = Self.deduplicate(models: knownModels)
-        self.routedModels = routedModels
+        self.customProviderRoutingEnabled = customProviderRoutingEnabled
+        self.routedModels = Set(routedModels.map(Self.normalizeModelID).filter { !$0.isEmpty })
+        self.rawHTTPLoggingEnabled = rawHTTPLoggingEnabled
+        self.unsafeFullRawHTTPLoggingEnabled = unsafeFullRawHTTPLoggingEnabled
+        self.logTailLineLimit = Self.normalizeLogTailLineLimit(logTailLineLimit)
     }
 
-    public var sortedKnownModels: [KnownModel] {
-        knownModels.sorted { lhs, rhs in
-            if lhs.source == rhs.source {
-                return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
-            }
-            return sourceRank(lhs.source) < sourceRank(rhs.source)
-        }
+    private enum CodingKeys: String, CodingKey {
+        case cheapRouterBaseURL
+        case localProxyHost
+        case localProxyPort
+        case launchAtLoginEnabled
+        case customProviderRoutingEnabled
+        case routedModels
+        case rawHTTPLoggingEnabled
+        case unsafeFullRawHTTPLoggingEnabled
+        case logTailLineLimit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            cheapRouterBaseURL: try container.decode(URL.self, forKey: .cheapRouterBaseURL),
+            localProxyHost: try container.decode(String.self, forKey: .localProxyHost),
+            localProxyPort: try container.decode(Int.self, forKey: .localProxyPort),
+            launchAtLoginEnabled: try container.decode(Bool.self, forKey: .launchAtLoginEnabled),
+            customProviderRoutingEnabled: try container.decodeIfPresent(Bool.self, forKey: .customProviderRoutingEnabled) ?? false,
+            routedModels: try container.decodeIfPresent(Set<String>.self, forKey: .routedModels) ?? [],
+            rawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .rawHTTPLoggingEnabled) ?? true,
+            unsafeFullRawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .unsafeFullRawHTTPLoggingEnabled) ?? false,
+            logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit
+        )
     }
 
     public func routesViaCheapRouter(modelID: String) -> Bool {
-        routedModels.contains(modelID)
+        routedModels.contains(Self.normalizeModelID(modelID))
     }
 
     public mutating func setRouteViaCheapRouter(_ enabled: Bool, for modelID: String) {
-        addKnownModelIfNeeded(modelID, source: .manual, firstSeenAt: nil)
+        let normalized = Self.normalizeModelID(modelID)
+        guard !normalized.isEmpty else { return }
         if enabled {
-            routedModels.insert(modelID)
+            routedModels.insert(normalized)
         } else {
-            routedModels.remove(modelID)
+            routedModels.remove(normalized)
         }
     }
 
-    @discardableResult
-    public mutating func registerSeenModel(_ modelID: String, at date: Date = Date()) -> Bool {
-        addKnownModelIfNeeded(modelID, source: .seenInTraffic, firstSeenAt: date)
+    private static func normalizeModelID(_ modelID: String) -> String {
+        modelID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    @discardableResult
-    public mutating func addManualModel(_ modelID: String) -> Bool {
-        addKnownModelIfNeeded(modelID, source: .manual, firstSeenAt: nil)
-    }
-
-    @discardableResult
-    private mutating func addKnownModelIfNeeded(_ modelID: String, source: KnownModelSource, firstSeenAt: Date?) -> Bool {
-        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return false }
-        guard !knownModels.contains(where: { $0.id == normalized }) else { return false }
-        knownModels.append(KnownModel(id: normalized, source: source, firstSeenAt: firstSeenAt))
-        knownModels = Self.deduplicate(models: knownModels)
-        return true
-    }
-
-    private static func deduplicate(models: [KnownModel]) -> [KnownModel] {
-        var seen = Set<String>()
-        return models.filter { model in
-            seen.insert(model.id).inserted
-        }
-    }
-
-    private func sourceRank(_ source: KnownModelSource) -> Int {
-        switch source {
-        case .builtIn: 0
-        case .seenInTraffic: 1
-        case .manual: 2
-        }
+    private static func normalizeLogTailLineLimit(_ value: Int) -> Int {
+        min(max(value, 10), 1000)
     }
 }
 
@@ -157,32 +140,15 @@ public final class UserDefaultsSettingsStore {
         else {
             return .defaults
         }
-        return mergeBuiltIns(into: settings)
+        return settings
     }
 
     public func save(_ settings: PorterSettings) throws {
-        let data = try JSONEncoder().encode(mergeBuiltIns(into: settings))
+        let data = try JSONEncoder().encode(settings)
         userDefaults.setSettingsData(data, forKey: key)
     }
 
     public func reset() {
         userDefaults.removeObject(forKey: key)
-    }
-
-    private func mergeBuiltIns(into settings: PorterSettings) -> PorterSettings {
-        var merged = settings
-        for modelID in PorterSettings.builtInModelIDs {
-            if !merged.knownModels.contains(where: { $0.id == modelID }) {
-                merged.knownModels.append(KnownModel(id: modelID, source: .builtIn))
-            }
-        }
-        return PorterSettings(
-            cheapRouterBaseURL: merged.cheapRouterBaseURL,
-            localProxyHost: merged.localProxyHost,
-            localProxyPort: merged.localProxyPort,
-            launchAtLoginEnabled: merged.launchAtLoginEnabled,
-            knownModels: merged.knownModels,
-            routedModels: merged.routedModels
-        )
     }
 }

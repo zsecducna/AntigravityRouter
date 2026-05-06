@@ -2,34 +2,34 @@ import XCTest
 @testable import AntigravityPorterCore
 
 final class RoutingDecisionTests: XCTestCase {
-    func testUnknownModelDefaultsDirect() {
+    func testRoutingDisabledDefaultsDirectForAllModels() {
         let router = RoutingEngine(config: .init(routedModels: []))
 
-        let decision = router.decision(for: .init(client: .geminiCLI, model: "new-model", action: .generateContent))
+        let decision = router.decision(for: .init(client: .antigravity, model: "new-model", action: .generateContent))
 
         XCTAssertEqual(decision, .googleDirect)
     }
 
-    func testRoutedClaudeModelUsesMessagesEndpoint() {
-        let router = RoutingEngine(config: .init(routedModels: ["claude-sonnet-4"]))
+    func testRoutingEnabledClaudeModelUsesMessagesEndpoint() {
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
 
         let decision = router.decision(for: .init(client: .antigravity, model: "claude-sonnet-4", action: .streamGenerateContent))
 
         XCTAssertEqual(decision, .cheapRouter(endpoint: .messages))
     }
 
-    func testRoutedNonClaudeModelUsesChatCompletionsEndpoint() {
-        let router = RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"]))
+    func testRoutingEnabledNonClaudeModelUsesChatCompletionsEndpoint() {
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
 
-        let decision = router.decision(for: .init(client: .geminiCLI, model: "gemini-2.5-pro", action: .generateContent))
+        let decision = router.decision(for: .init(client: .antigravity, model: "gpt-5.5", action: .generateContent))
 
         XCTAssertEqual(decision, .cheapRouter(endpoint: .chatCompletions))
     }
 
     func testUnsupportedRoutedRequestFailsClosed() {
-        let router = RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"], supportedActions: [.generateContent]))
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: [], supportedActions: [.generateContent]))
 
-        let decision = router.decision(for: .init(client: .geminiCLI, model: "gemini-2.5-pro", action: .countTokens))
+        let decision = router.decision(for: .init(client: .antigravity, model: "gpt-5.5", action: .countTokens))
 
         XCTAssertEqual(decision, .failClosed(reason: .unsupportedAction))
     }

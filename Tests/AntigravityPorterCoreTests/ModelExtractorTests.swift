@@ -2,18 +2,6 @@ import XCTest
 @testable import AntigravityPorterCore
 
 final class ModelExtractorTests: XCTestCase {
-    func testExtractsGeminiModelAndActionFromURLPath() throws {
-        let result = try ModelExtractor.extract(
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
-            body: Data()
-        )
-
-        XCTAssertEqual(result.client, .geminiCLI)
-        XCTAssertEqual(result.model, "gemini-2.5-pro")
-        XCTAssertEqual(result.action, .streamGenerateContent)
-    }
-
     func testExtractsAntigravityTopLevelModel() throws {
         let body = #"{"model":"claude-sonnet-4","contents":[{"role":"user"}]}"#.data(using: .utf8)!
 
@@ -29,7 +17,7 @@ final class ModelExtractorTests: XCTestCase {
     }
 
     func testExtractsAntigravityNestedModel() throws {
-        let body = #"{"request":{"payload":{"model":"gemini-2.5-flash"}}}"#.data(using: .utf8)!
+        let body = #"{"request":{"payload":{"model":"claude-sonnet-4-6"}}}"#.data(using: .utf8)!
 
         let result = try ModelExtractor.extract(
             host: "daily-cloudcode-pa.googleapis.com",
@@ -37,7 +25,8 @@ final class ModelExtractorTests: XCTestCase {
             body: body
         )
 
-        XCTAssertEqual(result.model, "gemini-2.5-flash")
+        XCTAssertEqual(result.client, .antigravity)
+        XCTAssertEqual(result.model, "claude-sonnet-4-6")
         XCTAssertEqual(result.action, .countTokens)
     }
 }

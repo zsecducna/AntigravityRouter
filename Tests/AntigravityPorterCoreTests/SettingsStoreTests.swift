@@ -8,34 +8,34 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.localProxyHost, "127.0.0.1")
         XCTAssertEqual(settings.localProxyPort, 8877)
         XCTAssertEqual(settings.cheapRouterBaseURL.absoluteString, "https://cheaprouter.uk")
+        XCTAssertFalse(settings.customProviderRoutingEnabled)
         XCTAssertTrue(settings.routedModels.isEmpty)
-        XCTAssertTrue(settings.knownModels.contains(.init(id: "gemini-2.5-pro", source: .builtIn)))
-        XCTAssertTrue(settings.knownModels.contains(.init(id: "claude-sonnet-4", source: .builtIn)))
+        XCTAssertTrue(settings.rawHTTPLoggingEnabled)
+        XCTAssertFalse(settings.unsafeFullRawHTTPLoggingEnabled)
+        XCTAssertEqual(settings.logTailLineLimit, 200)
     }
 
-    func testSeenModelsAreAddedDirectByDefault() {
+    func testRoutingLabelsDescribeAppEnvRouting() {
+        XCTAssertEqual(PorterSettings.routingControlLabel, "Local proxy listener")
+        XCTAssertEqual(PorterSettings.proxyListenLabel, "Local proxy")
+        XCTAssertEqual(PorterSettings.proxyConnectsLabel, "Proxy CONNECTs today")
+        XCTAssertEqual(PorterSettings.targetInferenceConnectsLabel, "Target Google API CONNECTs")
+        XCTAssertEqual(PorterSettings.otherHTTPSConnectsLabel, "Other HTTPS CONNECTs")
+        XCTAssertEqual(PorterSettings.routedRequestsLabel, "Routed model requests")
+        XCTAssertEqual(PorterSettings.directRequestsLabel, "Direct Google model requests")
+    }
+
+    func testRouteToggleNormalizesModelIDAndCanDisableRoute() {
         var settings = PorterSettings.defaults
-        let seenAt = Date(timeIntervalSince1970: 12)
 
-        XCTAssertTrue(settings.registerSeenModel("new-model", at: seenAt))
-        XCTAssertFalse(settings.registerSeenModel("new-model", at: seenAt))
+        settings.setRouteViaCheapRouter(true, for: " claude-sonnet-4-6 ")
+        XCTAssertTrue(settings.routesViaCheapRouter(modelID: "claude-sonnet-4-6"))
 
-        XCTAssertTrue(settings.knownModels.contains(.init(id: "new-model", source: .seenInTraffic, firstSeenAt: seenAt)))
-        XCTAssertFalse(settings.routesViaCheapRouter(modelID: "new-model"))
+        settings.setRouteViaCheapRouter(false, for: "claude-sonnet-4-6")
+        XCTAssertFalse(settings.routesViaCheapRouter(modelID: "claude-sonnet-4-6"))
     }
 
-    func testRouteToggleAddsManualModelAndCanDisableRoute() {
-        var settings = PorterSettings.defaults
-
-        settings.setRouteViaCheapRouter(true, for: "custom-claude")
-        XCTAssertTrue(settings.routesViaCheapRouter(modelID: "custom-claude"))
-        XCTAssertTrue(settings.knownModels.contains(.init(id: "custom-claude", source: .manual)))
-
-        settings.setRouteViaCheapRouter(false, for: "custom-claude")
-        XCTAssertFalse(settings.routesViaCheapRouter(modelID: "custom-claude"))
-    }
-
-    func testStoreRoundTripsSettingsAndMergesMissingBuiltIns() throws {
+    func testStoreRoundTripsSettings() throws {
         let storage = InMemorySettingsDataStore()
         let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
         let custom = PorterSettings(
@@ -43,8 +43,11 @@ final class SettingsStoreTests: XCTestCase {
             localProxyHost: "127.0.0.1",
             localProxyPort: 9999,
             launchAtLoginEnabled: true,
-            knownModels: [.init(id: "only-custom", source: .manual)],
-            routedModels: ["only-custom"]
+            customProviderRoutingEnabled: true,
+            routedModels: [" only-custom "],
+            rawHTTPLoggingEnabled: false,
+            unsafeFullRawHTTPLoggingEnabled: true,
+            logTailLineLimit: 50
         )
 
         try store.save(custom)
@@ -53,8 +56,33 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(loaded.cheapRouterBaseURL.absoluteString, "https://router.example")
         XCTAssertEqual(loaded.localProxyPort, 9999)
         XCTAssertEqual(loaded.launchAtLoginEnabled, true)
+        XCTAssertTrue(loaded.customProviderRoutingEnabled)
+        XCTAssertFalse(loaded.rawHTTPLoggingEnabled)
+        XCTAssertTrue(loaded.unsafeFullRawHTTPLoggingEnabled)
+        XCTAssertEqual(loaded.logTailLineLimit, 50)
         XCTAssertTrue(loaded.routesViaCheapRouter(modelID: "only-custom"))
-        XCTAssertTrue(loaded.knownModels.contains(.init(id: "gemini-2.5-pro", source: .builtIn)))
+    }
+
+    func testLogTailLineLimitIsClamped() {
+        let low = PorterSettings(
+            cheapRouterBaseURL: URL(string: "https://router.example")!,
+            localProxyHost: "127.0.0.1",
+            localProxyPort: 9999,
+            launchAtLoginEnabled: false,
+            routedModels: [],
+            logTailLineLimit: 1
+        )
+        let high = PorterSettings(
+            cheapRouterBaseURL: URL(string: "https://router.example")!,
+            localProxyHost: "127.0.0.1",
+            localProxyPort: 9999,
+            launchAtLoginEnabled: false,
+            routedModels: [],
+            logTailLineLimit: 5000
+        )
+
+        XCTAssertEqual(low.logTailLineLimit, 10)
+        XCTAssertEqual(high.logTailLineLimit, 1000)
     }
 
     func testStoreFallsBackToDefaultsForCorruptData() {

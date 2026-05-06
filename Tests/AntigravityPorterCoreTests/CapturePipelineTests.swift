@@ -5,8 +5,8 @@ final class CapturePipelineTests: XCTestCase {
     func testSanitizerRedactsSecretHeadersAndJSONFields() throws {
         let capture = CapturedExchange(
             id: "cap-1",
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/models/gemini-2.5-pro:generateContent",
+            host: "cloudcode-pa.googleapis.com",
+            path: "/v1internal:generateContent",
             requestHeaders: ["Authorization": "Bearer google-token", "x-goog-api-key": "abc", "Content-Type": "application/json"],
             requestBody: Data(#"{"access_token":"secret","prompt":"keep"}"#.utf8),
             responseStatus: 200,
@@ -43,8 +43,8 @@ final class CapturePipelineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let capture = CapturedExchange(
             id: "cap/secret",
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/models/gemini-2.5-pro:generateContent",
+            host: "cloudcode-pa.googleapis.com",
+            path: "/v1internal:generateContent",
             requestHeaders: ["Authorization": "Bearer google-token"],
             requestBody: Data(#"{"api_key":"secret","contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.utf8),
             responseStatus: 200,
@@ -70,18 +70,18 @@ final class CapturePipelineTests: XCTestCase {
 
     func testReplayHarnessRoutesCapturedFixtureThroughPlanner() throws {
         let capture = CapturedExchange(
-            id: "gemini-stream",
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            id: "antigravity-stream",
+            host: "cloudcode-pa.googleapis.com",
+            path: "/v1internal:streamGenerateContent",
             requestHeaders: ["content-type": "application/json"],
-            requestBody: Data(#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":128}}"#.utf8),
+            requestBody: Data(#"{"model":"gpt-5.5","contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":128}}"#.utf8),
             responseStatus: 200,
             responseHeaders: [:],
             responseBody: Data(),
             timing: .init(startedAt: Date(timeIntervalSince1970: 5), durationMS: 20)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"]))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
         ))
 
         let result = harness.replay(capture)
@@ -89,28 +89,28 @@ final class CapturePipelineTests: XCTestCase {
         guard case let .routeToCheapRouter(payload, metadata) = result.action else {
             return XCTFail("expected cheaprouter route, got \(result.action)")
         }
-        XCTAssertEqual(result.captureID, "gemini-stream")
-        XCTAssertEqual(metadata.model, "gemini-2.5-pro")
+        XCTAssertEqual(result.captureID, "antigravity-stream")
+        XCTAssertEqual(metadata.model, "gpt-5.5")
         XCTAssertEqual(payload.endpoint, .chatCompletions)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
-        XCTAssertEqual(json["model"] as? String, "gemini-2.5-pro")
+        XCTAssertEqual(json["model"] as? String, "gpt-5.5")
         XCTAssertEqual(json["max_tokens"] as? Int, 128)
     }
 
     func testReplayHarnessKeepsUnsupportedRoutedFixtureFailClosed() {
         let capture = CapturedExchange(
-            id: "gemini-count",
-            host: "generativelanguage.googleapis.com",
-            path: "/v1beta/models/gemini-2.5-pro:countTokens",
+            id: "antigravity-count",
+            host: "cloudcode-pa.googleapis.com",
+            path: "/v1internal:countTokens",
             requestHeaders: ["content-type": "application/json"],
-            requestBody: Data(#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.utf8),
+            requestBody: Data(#"{"model":"gpt-5.5","contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#.utf8),
             responseStatus: 200,
             responseHeaders: [:],
             responseBody: Data(),
             timing: .init(startedAt: Date(timeIntervalSince1970: 6), durationMS: 22)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(routedModels: ["gemini-2.5-pro"]))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, routedModels: []))
         ))
 
         let result = harness.replay(capture)

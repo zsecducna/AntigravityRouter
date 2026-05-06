@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AntigravityPorter",
+    name: "AntigravityRouter",
     platforms: [
         .macOS(.v14)
     ],
@@ -13,8 +13,12 @@ let package = Package(
             targets: ["AntigravityPorterCore"]
         ),
         .executable(
-            name: "AntigravityPorter",
+            name: "AntigravityRouter",
             targets: ["AntigravityPorterApp"]
+        ),
+        .executable(
+            name: "AntigravityPorterMonitor",
+            targets: ["AntigravityPorterMonitor"]
         )
     ],
     targets: [
@@ -25,9 +29,17 @@ let package = Package(
             name: "AntigravityPorterApp",
             dependencies: ["AntigravityPorterCore"]
         ),
+        .executableTarget(
+            name: "AntigravityPorterMonitor",
+            dependencies: ["AntigravityPorterCore"]
+        ),
         .testTarget(
             name: "AntigravityPorterCoreTests",
             dependencies: ["AntigravityPorterCore"]
+        ),
+        .testTarget(
+            name: "AntigravityPorterAppTests",
+            dependencies: ["AntigravityPorterApp"]
         )
     ]
 )

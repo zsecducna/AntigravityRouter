@@ -29,22 +29,22 @@ final class CertificateAuthorityTests: XCTestCase {
         let authority = CertificateAuthority(keychain: InMemoryKeychainStore())
         _ = try authority.loadOrCreate()
 
-        let first = try authority.leafIdentity(for: "generativelanguage.googleapis.com", policy: .allowIntercept)
-        let cached = try authority.leafIdentity(for: "generativelanguage.googleapis.com", policy: .allowIntercept)
-        let other = try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)
+        let first = try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)
+        let cached = try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)
+        let other = try authority.leafIdentity(for: "daily-cloudcode-pa.googleapis.com", policy: .allowIntercept)
 
         XCTAssertEqual(first, cached)
         XCTAssertNotEqual(first, other)
-        XCTAssertEqual(first.hostname, "generativelanguage.googleapis.com")
+        XCTAssertEqual(first.hostname, "cloudcode-pa.googleapis.com")
         XCTAssertFalse(first.certificateDER.isEmpty)
         XCTAssertFalse(first.privateKeyDER.isEmpty)
-        XCTAssertTrue(String(decoding: first.certificateDER, as: UTF8.self).contains("generativelanguage.googleapis.com"))
+        XCTAssertTrue(String(decoding: first.certificateDER, as: UTF8.self).contains("cloudcode-pa.googleapis.com"))
         #if canImport(Security)
         XCTAssertNotNil(SecCertificateCreateWithData(nil, first.certificateDER as CFData))
         #endif
 
         let rotation = try authority.rotate()
-        let afterRotation = try authority.leafIdentity(for: "generativelanguage.googleapis.com", policy: .allowIntercept)
+        let afterRotation = try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)
 
         XCTAssertEqual(rotation.cleanup, .staleTrustRemovalRequired)
         XCTAssertEqual(authority.status, .rotationPending)
@@ -55,7 +55,7 @@ final class CertificateAuthorityTests: XCTestCase {
         let store = InMemoryKeychainStore()
         let authority = CertificateAuthority(keychain: store)
         _ = try authority.loadOrCreate()
-        _ = try authority.leafIdentity(for: "generativelanguage.googleapis.com", policy: .allowIntercept)
+        _ = try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)
 
         let result = try authority.uninstall()
 
@@ -63,7 +63,7 @@ final class CertificateAuthorityTests: XCTestCase {
         XCTAssertEqual(result.manualRemediation, .removeTrustedCertificateInKeychainAccess)
         XCTAssertEqual(authority.status, .cleanupPending)
         XCTAssertNil(try store.data(for: .certificateAuthorityPrivateKey))
-        XCTAssertThrowsError(try authority.leafIdentity(for: "generativelanguage.googleapis.com", policy: .allowIntercept)) { error in
+        XCTAssertThrowsError(try authority.leafIdentity(for: "cloudcode-pa.googleapis.com", policy: .allowIntercept)) { error in
             XCTAssertEqual(error as? CertificateAuthorityError, .authorityUnavailable(.cleanupPending))
         }
     }

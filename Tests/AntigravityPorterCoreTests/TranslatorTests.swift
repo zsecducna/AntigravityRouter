@@ -2,7 +2,7 @@ import XCTest
 @testable import AntigravityPorterCore
 
 final class TranslatorTests: XCTestCase {
-    func testGeminiBodyMapsToOpenAIChatCompletionsPayload() throws {
+    func testAntigravityBodyMapsToOpenAIChatCompletionsPayload() throws {
         let body = Data("""
         {
           "systemInstruction": {"parts": [{"text": "be concise"}]},
@@ -13,7 +13,7 @@ final class TranslatorTests: XCTestCase {
           "generationConfig": {"temperature": 1.0, "maxOutputTokens": 8192}
         }
         """.utf8)
-        let metadata = ModelRequestMetadata(client: .geminiCLI, model: "gemini-2.5-pro", action: .streamGenerateContent)
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "gpt-5.5", action: .streamGenerateContent)
 
         let result = Translator().translate(metadata: metadata, body: body, endpoint: .chatCompletions)
 
@@ -23,7 +23,7 @@ final class TranslatorTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
         XCTAssertEqual(payload.endpoint, .chatCompletions)
-        XCTAssertEqual(json["model"] as? String, "gemini-2.5-pro")
+        XCTAssertEqual(json["model"] as? String, "gpt-5.5")
         XCTAssertEqual(json["stream"] as? Bool, true)
         XCTAssertEqual(json["max_tokens"] as? Int, 8192)
         XCTAssertEqual(messages, [
@@ -33,7 +33,7 @@ final class TranslatorTests: XCTestCase {
         ])
     }
 
-    func testGeminiBodyMapsToAnthropicMessagesPayloadForClaude() throws {
+    func testAntigravityBodyMapsToAnthropicMessagesPayloadForClaude() throws {
         let body = Data("""
         {
           "systemInstruction": {"parts": [{"text": "be exact"}]},
@@ -60,6 +60,58 @@ final class TranslatorTests: XCTestCase {
         XCTAssertEqual(messages, [["role": "user", "content": "hello"]])
     }
 
+    func testAntigravityNestedRequestMapsToAnthropicMessagesPayload() throws {
+        let body = Data("""
+        {
+          "model": "claude-sonnet-4-6",
+          "userAgent": "antigravity",
+          "request": {
+            "systemInstruction": {"parts": [{"text": "be exact"}]},
+            "contents": [
+              {"role": "user", "parts": [{"text": "hello"}]}
+            ],
+            "generationConfig": {"maxOutputTokens": 4096}
+          }
+        }
+        """.utf8)
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "claude-sonnet-4-6", action: .streamGenerateContent)
+
+        let result = Translator().translate(metadata: metadata, body: body, endpoint: .messages)
+
+        guard case let .success(payload) = result else {
+            return XCTFail("expected translation success, got \(result)")
+        }
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
+        let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
+        XCTAssertEqual(json["model"] as? String, "claude-sonnet-4-6")
+        XCTAssertEqual(json["stream"] as? Bool, true)
+        XCTAssertEqual(json["max_tokens"] as? Int, 4096)
+        XCTAssertEqual(messages, [["role": "user", "content": "hello"]])
+    }
+
+    func testAntigravityNestedClaudeRequestDefaultsMaxTokensWhenMissing() throws {
+        let body = Data("""
+        {
+          "model": "claude-sonnet-4-6",
+          "request": {
+            "contents": [
+              {"role": "user", "parts": [{"text": "hello"}]}
+            ]
+          }
+        }
+        """.utf8)
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "claude-sonnet-4-6", action: .streamGenerateContent)
+
+        let result = Translator().translate(metadata: metadata, body: body, endpoint: .messages)
+
+        guard case let .success(payload) = result else {
+            return XCTFail("expected translation success, got \(result)")
+        }
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
+        XCTAssertEqual(json["max_tokens"] as? Int, 4096)
+        XCTAssertEqual(json["stream"] as? Bool, true)
+    }
+
     func testUnsupportedSchemaFailsClosedInsteadOfForwardingRawBody() throws {
         let metadata = ModelRequestMetadata(client: .antigravity, model: "claude-sonnet-4", action: .generateContent)
 
@@ -70,10 +122,86 @@ final class TranslatorTests: XCTestCase {
 
     func testResponsesEndpointRemainsCaptureDrivenAndFailsClosed() throws {
         let body = Data(#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#.utf8)
-        let metadata = ModelRequestMetadata(client: .geminiCLI, model: "gpt-5.5", action: .generateContent)
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "gpt-5.5", action: .generateContent)
 
         let result = Translator().translate(metadata: metadata, body: body, endpoint: .responses)
 
         XCTAssertEqual(result, .failClosed(reason: .unsupportedSchema))
+    }
+
+    func testOpenAISSEMapsToGoogleGenerateContentSSE() throws {
+        let response = CheapRouterResponse(
+            statusCode: 200,
+            headers: ["content-type": "text/event-stream"],
+            body: Data("""
+            data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+            data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3},"model":"gpt-5.5"}
+
+            data: [DONE]
+
+            """.utf8)
+        )
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "gpt-5.5", action: .streamGenerateContent)
+
+        let translated = ResponseTranslator().translate(response: response, metadata: metadata)
+        let text = String(decoding: translated.body, as: UTF8.self)
+
+        XCTAssertEqual(translated.headers["content-type"], "text/event-stream")
+        XCTAssertTrue(text.contains(#""response":{"#))
+        XCTAssertTrue(text.contains(#""responseId":"resp_"#))
+        XCTAssertTrue(text.contains(#""text":"Hi""#))
+        XCTAssertTrue(text.contains(#""finishReason":"STOP""#))
+        XCTAssertTrue(text.contains(#""totalTokenCount":3"#))
+        XCTAssertTrue(text.contains("data: [DONE]"))
+    }
+
+    func testAnthropicJSONMapsToGoogleGenerateContentJSON() throws {
+        let response = CheapRouterResponse(
+            statusCode: 200,
+            headers: ["content-type": "application/json"],
+            body: Data("""
+            {
+              "model": "claude-sonnet-4-6",
+              "content": [{"type": "text", "text": "Hello"}],
+              "stop_reason": "end_turn",
+              "usage": {"input_tokens": 4, "output_tokens": 2}
+            }
+            """.utf8)
+        )
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "claude-sonnet-4-6", action: .generateContent)
+
+        let translated = ResponseTranslator().translate(response: response, metadata: metadata)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: translated.body) as? [String: Any])
+        let candidates = try XCTUnwrap(json["candidates"] as? [[String: Any]])
+        let content = try XCTUnwrap(candidates.first?["content"] as? [String: Any])
+        let parts = try XCTUnwrap(content["parts"] as? [[String: String]])
+
+        XCTAssertEqual(parts.first?["text"], "Hello")
+        XCTAssertEqual(json["modelVersion"] as? String, "claude-sonnet-4-6")
+    }
+
+    func testProviderModelsBuildAntigravityAvailableModelsBody() throws {
+        let body = AntigravityModelsResponseBuilder.responseBody(for: [
+            ProviderModel(id: "claude-sonnet-4-6"),
+            ProviderModel(id: "gpt-5.5"),
+            ProviderModel(id: "gpt-5.5-review"),
+            ProviderModel(id: "gpt-image-2")
+        ])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let models = try XCTUnwrap(json["models"] as? [String: Any])
+        let claude = try XCTUnwrap(models["claude-sonnet-4-6"] as? [String: Any])
+        let sorts = try XCTUnwrap(json["agentModelSorts"] as? [[String: Any]])
+        let groups = try XCTUnwrap(sorts.first?["groups"] as? [[String: Any]])
+
+        XCTAssertEqual(json["defaultAgentModelId"] as? String, "gpt-5.5")
+        XCTAssertNotNil(models["gpt-5.5"])
+        XCTAssertNil(models["gpt-image-2"])
+        XCTAssertNil(models["gpt-5.5-review"])
+        XCTAssertEqual(claude["modelProvider"] as? String, "MODEL_PROVIDER_ANTHROPIC")
+        XCTAssertEqual(claude["model"] as? String, "MODEL_PLACEHOLDER_CR_1")
+        XCTAssertNotNil((claude["quotaInfo"] as? [String: Any])?["resetTime"])
+        XCTAssertEqual(json["commandModelIds"] as? [String], [])
+        XCTAssertEqual(groups.first?["modelIds"] as? [String], ["claude-sonnet-4-6", "gpt-5.5"])
     }
 }

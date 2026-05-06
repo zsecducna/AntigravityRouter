@@ -1,7 +1,6 @@
 import Foundation
 
 public enum PorterClient: Equatable, Sendable {
-    case geminiCLI
     case antigravity
 }
 
@@ -30,13 +29,9 @@ public enum ModelExtractorError: Error, Equatable, Sendable {
 
 public enum ModelExtractor {
     public static func extract(host: String, path: String, body: Data) throws -> ModelRequestMetadata {
-        let client: PorterClient = host == "generativelanguage.googleapis.com" ? .geminiCLI : .antigravity
         let action = actionFromPath(path)
-        if client == .geminiCLI, let model = geminiModelFromPath(path) {
-            return ModelRequestMetadata(client: client, model: model, action: action)
-        }
         if let model = modelFromJSON(body) {
-            return ModelRequestMetadata(client: client, model: model, action: action)
+            return ModelRequestMetadata(client: .antigravity, model: model, action: action)
         }
         throw ModelExtractorError.modelNotFound
     }
@@ -46,14 +41,6 @@ public enum ModelExtractor {
         if path.contains(":generateContent") { return .generateContent }
         if path.contains(":countTokens") { return .countTokens }
         return .unknown(path)
-    }
-
-    private static func geminiModelFromPath(_ path: String) -> String? {
-        guard let range = path.range(of: "/models/") else { return nil }
-        let suffix = path[range.upperBound...]
-        let end = suffix.firstIndex { $0 == ":" || $0 == "?" } ?? suffix.endIndex
-        let model = String(suffix[..<end])
-        return model.isEmpty ? nil : model
     }
 
     private static func modelFromJSON(_ body: Data) -> String? {
@@ -80,12 +67,14 @@ public enum ModelExtractor {
 public enum CheapRouterEndpoint: Equatable, Sendable {
     case chatCompletions
     case messages
+    case models
     case responses
 
     public var path: String {
         switch self {
         case .chatCompletions: "/v1/chat/completions"
         case .messages: "/v1/messages"
+        case .models: "/v1/models"
         case .responses: "/v1/responses"
         }
     }
@@ -103,16 +92,30 @@ public enum RoutingDecision: Equatable, Sendable {
 }
 
 public struct RoutingEngineConfiguration: Equatable, Sendable {
+    public var customProviderRoutingEnabled: Bool
     public var routedModels: Set<String>
     public var supportedActions: Set<PorterAction>
 
-    public init(routedModels: Set<String>, supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]) {
+    public init(
+        customProviderRoutingEnabled: Bool = false,
+        routedModels: Set<String>,
+        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]
+    ) {
+        self.customProviderRoutingEnabled = customProviderRoutingEnabled
         self.routedModels = routedModels
         self.supportedActions = supportedActions
     }
 
-    public init(routedModels: [String], supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]) {
-        self.init(routedModels: Set(routedModels), supportedActions: supportedActions)
+    public init(
+        customProviderRoutingEnabled: Bool = false,
+        routedModels: [String],
+        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]
+    ) {
+        self.init(
+            customProviderRoutingEnabled: customProviderRoutingEnabled,
+            routedModels: Set(routedModels),
+            supportedActions: supportedActions
+        )
     }
 }
 
@@ -124,9 +127,17 @@ public struct RoutingEngine: Sendable {
     }
 
     public func decision(for metadata: ModelRequestMetadata) -> RoutingDecision {
-        guard config.routedModels.contains(metadata.model) else { return .googleDirect }
+        guard config.customProviderRoutingEnabled else { return .googleDirect }
         guard config.supportedActions.contains(metadata.action) else { return .failClosed(reason: .unsupportedAction) }
         return .cheapRouter(endpoint: metadata.model.lowercased().contains("claude") ? .messages : .chatCompletions)
+    }
+
+    private func routesModel(_ model: String) -> Bool {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return config.routedModels.contains { routed in
+            let candidate = routed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == candidate || normalized.hasPrefix(candidate) || candidate.hasPrefix(normalized)
+        }
     }
 }
 
@@ -147,9 +158,10 @@ public struct Translator: Sendable {
         guard metadata.action == .generateContent || metadata.action == .streamGenerateContent else {
             return .failClosed(reason: .unsupportedAction)
         }
-        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+        guard let rootObject = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
             return .failClosed(reason: .unsupportedSchema)
         }
+        let object = requestObject(from: rootObject)
 
         let translated: [String: Any]?
         switch endpoint {
@@ -157,7 +169,7 @@ public struct Translator: Sendable {
             translated = makeOpenAIChatPayload(metadata: metadata, object: object)
         case .messages:
             translated = makeAnthropicMessagesPayload(metadata: metadata, object: object)
-        case .responses:
+        case .models, .responses:
             translated = nil
         }
 
@@ -171,8 +183,15 @@ public struct Translator: Sendable {
         return .success(CheapRouterRequestPayload(endpoint: endpoint, model: metadata.model, body: data))
     }
 
+    private func requestObject(from object: [String: Any]) -> [String: Any] {
+        if let request = object["request"] as? [String: Any] {
+            return request
+        }
+        return object
+    }
+
     private func makeOpenAIChatPayload(metadata: ModelRequestMetadata, object: [String: Any]) -> [String: Any]? {
-        guard let messages = geminiMessages(from: object, includeSystemMessage: true), !messages.isEmpty else {
+        guard let messages = googleGenerateContentMessages(from: object, includeSystemMessage: true), !messages.isEmpty else {
             return nil
         }
 
@@ -186,7 +205,7 @@ public struct Translator: Sendable {
     }
 
     private func makeAnthropicMessagesPayload(metadata: ModelRequestMetadata, object: [String: Any]) -> [String: Any]? {
-        guard let messages = geminiMessages(from: object, includeSystemMessage: false), !messages.isEmpty else {
+        guard let messages = googleGenerateContentMessages(from: object, includeSystemMessage: false), !messages.isEmpty else {
             return nil
         }
 
@@ -199,9 +218,7 @@ public struct Translator: Sendable {
             payload["system"] = system
         }
         applyGenerationConfig(from: object, to: &payload)
-        guard payload["max_tokens"] != nil else {
-            return nil
-        }
+        payload["max_tokens"] = payload["max_tokens"] ?? 4096
         return payload
     }
 
@@ -215,7 +232,7 @@ public struct Translator: Sendable {
         }
     }
 
-    private func geminiMessages(from object: [String: Any], includeSystemMessage: Bool) -> [[String: String]]? {
+    private func googleGenerateContentMessages(from object: [String: Any], includeSystemMessage: Bool) -> [[String: String]]? {
         var messages: [[String: String]] = []
         if includeSystemMessage, let system = systemInstructionText(from: object) {
             messages.append(["role": "system", "content": system])
@@ -228,8 +245,8 @@ public struct Translator: Sendable {
             guard let text = textFromParts(content["parts"]), !text.isEmpty else {
                 return nil
             }
-            let geminiRole = content["role"] as? String ?? "user"
-            messages.append(["role": openAIRole(fromGeminiRole: geminiRole), "content": text])
+            let googleRole = content["role"] as? String ?? "user"
+            messages.append(["role": openAIRole(fromGoogleRole: googleRole), "content": text])
         }
         return messages
     }
@@ -249,7 +266,7 @@ public struct Translator: Sendable {
         return text.isEmpty ? nil : text
     }
 
-    private func openAIRole(fromGeminiRole role: String) -> String {
+    private func openAIRole(fromGoogleRole role: String) -> String {
         role == "model" ? "assistant" : role
     }
 }
@@ -263,5 +280,320 @@ public struct CheapRouterRequestPayload: Equatable, Sendable {
         self.endpoint = endpoint
         self.model = model
         self.body = body
+    }
+}
+
+public struct ProxyHTTPResponse: Equatable, Sendable {
+    public var statusCode: Int
+    public var headers: [String: String]
+    public var body: Data
+
+    public init(statusCode: Int, headers: [String: String], body: Data) {
+        self.statusCode = statusCode
+        self.headers = headers
+        self.body = body
+    }
+
+    public func normalizedForClient() -> ProxyHTTPResponse {
+        var normalized: [String: String] = [:]
+        for (name, value) in headers {
+            let lower = name.lowercased()
+            guard lower != "content-length",
+                  lower != "transfer-encoding",
+                  lower != "connection",
+                  lower != "content-encoding",
+                  lower != "content-md5"
+            else { continue }
+            normalized[name] = value
+        }
+        normalized["Content-Length"] = "\(body.count)"
+        normalized["Connection"] = "close"
+        return ProxyHTTPResponse(statusCode: statusCode, headers: normalized, body: body)
+    }
+}
+
+public struct ResponseTranslator: Sendable {
+    public init() {}
+
+    public func translate(response: CheapRouterResponse, metadata: ModelRequestMetadata) -> ProxyHTTPResponse {
+        guard (200..<300).contains(response.statusCode) else {
+            return ProxyHTTPResponse(statusCode: response.statusCode, headers: response.headers, body: response.body)
+        }
+
+        switch metadata.action {
+        case .streamGenerateContent:
+            return ProxyHTTPResponse(
+                statusCode: 200,
+                headers: ["content-type": "text/event-stream", "cache-control": "no-cache"],
+                body: translateSSE(response.body, model: metadata.model)
+            )
+        case .generateContent:
+            return ProxyHTTPResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: translateJSON(response.body, model: metadata.model)
+            )
+        default:
+            return ProxyHTTPResponse(statusCode: response.statusCode, headers: response.headers, body: response.body)
+        }
+    }
+
+    private func translateSSE(_ body: Data, model: String) -> Data {
+        let text = String(decoding: body, as: UTF8.self)
+        var output = Data()
+        let responseID = "resp_\(UUID().uuidString)"
+
+        for event in text.components(separatedBy: "\n\n") {
+            for line in event.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+                guard line.hasPrefix("data:") else { continue }
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !payload.isEmpty, payload != "[DONE]" else { continue }
+                guard let data = payload.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+
+                for chunk in googleGenerateContentChunks(fromSSEObject: object, fallbackModel: model, responseID: responseID) {
+                    output.append(Data("data: \(chunk)\r\n\r\n".utf8))
+                }
+            }
+        }
+
+        output.append(Data("data: [DONE]\r\n\r\n".utf8))
+        return output
+    }
+
+    private func translateJSON(_ body: Data, model: String) -> Data {
+        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return body
+        }
+        if object["candidates"] != nil {
+            return body
+        }
+
+        let text: String
+        let finishReason: String
+        let usage: [String: Any]?
+        let responseModel: String
+
+        if let choice = (object["choices"] as? [[String: Any]])?.first {
+            let message = choice["message"] as? [String: Any]
+            text = message?["content"] as? String ?? ""
+            finishReason = mapFinishReason(choice["finish_reason"] as? String)
+            usage = object["usage"] as? [String: Any]
+            responseModel = object["model"] as? String ?? model
+        } else if let content = object["content"] as? [[String: Any]] {
+            text = content.compactMap { $0["text"] as? String }.joined()
+            finishReason = mapFinishReason(object["stop_reason"] as? String)
+            usage = anthropicUsageObject(object["usage"] as? [String: Any])
+            responseModel = object["model"] as? String ?? model
+        } else {
+            return body
+        }
+
+        let googleResponse = googleGenerateContentResponseObject(text: text, finishReason: finishReason, usage: usage, model: responseModel)
+        return (try? JSONSerialization.data(withJSONObject: googleResponse, options: [.sortedKeys])) ?? body
+    }
+
+    private func googleGenerateContentChunks(fromSSEObject object: [String: Any], fallbackModel: String, responseID: String) -> [String] {
+        if let choice = (object["choices"] as? [[String: Any]])?.first {
+            let delta = choice["delta"] as? [String: Any] ?? [:]
+            var chunks: [String] = []
+            if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+                chunks.append(googleGenerateContentSSEChunk(text: reasoning, thought: true, responseID: responseID))
+            }
+            if let content = delta["content"] as? String, !content.isEmpty {
+                chunks.append(googleGenerateContentSSEChunk(text: content, responseID: responseID))
+            }
+            if let finishReason = choice["finish_reason"] as? String {
+                chunks.append(googleGenerateContentSSEChunk(
+                    text: "",
+                    finishReason: mapFinishReason(finishReason),
+                    usage: object["usage"] as? [String: Any],
+                    model: object["model"] as? String ?? fallbackModel,
+                    responseID: responseID
+                ))
+            }
+            return chunks
+        }
+
+        guard let type = object["type"] as? String else { return [] }
+        if type == "content_block_delta",
+           let delta = object["delta"] as? [String: Any],
+           let text = delta["text"] as? String,
+           !text.isEmpty {
+            return [googleGenerateContentSSEChunk(text: text, responseID: responseID)]
+        }
+        if type == "message_delta" {
+            let delta = object["delta"] as? [String: Any] ?? [:]
+            return [googleGenerateContentSSEChunk(
+                text: "",
+                finishReason: mapFinishReason(delta["stop_reason"] as? String),
+                usage: anthropicUsageObject(object["usage"] as? [String: Any]),
+                model: fallbackModel,
+                responseID: responseID
+            )]
+        }
+        return []
+    }
+
+    private func googleGenerateContentSSEChunk(
+        text: String,
+        thought: Bool = false,
+        finishReason: String? = nil,
+        usage: [String: Any]? = nil,
+        model: String? = nil,
+        responseID: String
+    ) -> String {
+        var part: [String: Any] = ["text": text]
+        if thought {
+            part["thought"] = true
+        }
+        var candidate: [String: Any] = [
+            "content": ["role": "model", "parts": [part]],
+            "index": 0
+        ]
+        if let finishReason {
+            candidate["finishReason"] = finishReason
+        }
+        var object: [String: Any] = ["candidates": [candidate]]
+        if let usage {
+            object["usageMetadata"] = googleGenerateContentUsageObject(usage)
+        }
+        if let model {
+            object["modelVersion"] = model
+        }
+        object["responseId"] = responseID
+        object = ["response": object]
+        let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return data.map { String(decoding: $0, as: UTF8.self) } ?? #"{"response":{"candidates":[]}}"#
+    }
+
+    private func googleGenerateContentResponseObject(text: String, finishReason: String, usage: [String: Any]?, model: String) -> [String: Any] {
+        var object: [String: Any] = [
+            "candidates": [[
+                "content": ["role": "model", "parts": [["text": text]]],
+                "finishReason": finishReason,
+                "index": 0
+            ]],
+            "modelVersion": model
+        ]
+        if let usage {
+            object["usageMetadata"] = googleGenerateContentUsageObject(usage)
+        }
+        return object
+    }
+
+    private func googleGenerateContentUsageObject(_ usage: [String: Any]) -> [String: Any] {
+        [
+            "promptTokenCount": intValue(usage["prompt_tokens"] ?? usage["input_tokens"]),
+            "candidatesTokenCount": intValue(usage["completion_tokens"] ?? usage["output_tokens"]),
+            "totalTokenCount": intValue(usage["total_tokens"])
+        ].filter { _, value in value > 0 }
+    }
+
+    private func anthropicUsageObject(_ usage: [String: Any]?) -> [String: Any]? {
+        guard let usage else { return nil }
+        let input = intValue(usage["input_tokens"])
+        let output = intValue(usage["output_tokens"])
+        return [
+            "input_tokens": input,
+            "output_tokens": output,
+            "total_tokens": input + output
+        ]
+    }
+
+    private func intValue(_ value: Any?) -> Int {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        if let string = value as? String { return Int(string) ?? 0 }
+        return 0
+    }
+
+    private func mapFinishReason(_ reason: String?) -> String {
+        switch reason {
+        case "length", "max_tokens": "MAX_TOKENS"
+        case "content_filter": "SAFETY"
+        default: "STOP"
+        }
+    }
+}
+
+public enum AntigravityModelsResponseBuilder {
+    public static func responseBody(for models: [ProviderModel]) -> Data {
+        let ids = models.map(\.id)
+        let agentModelIDs = ids.filter(isAgentModelID)
+        let visibleAgentIDs = agentModelIDs.isEmpty ? ids : agentModelIDs
+        let defaultID = defaultAgentModelID(from: visibleAgentIDs)
+        let modelObjects = Dictionary(uniqueKeysWithValues: visibleAgentIDs.enumerated().map { index, id in
+            (id, modelObject(for: id, index: index))
+        })
+        let body: [String: Any] = [
+            "models": modelObjects,
+            "defaultAgentModelId": defaultID,
+            "agentModelSorts": [[
+                "displayName": "Recommended",
+                "groups": [["modelIds": visibleAgentIDs]]
+            ]],
+            "commandModelIds": [],
+            "tabModelIds": [],
+            "imageGenerationModelIds": [],
+            "mqueryModelIds": [],
+            "webSearchModelIds": [],
+            "commitMessageModelIds": [],
+            "experimentIds": [],
+            "tieredModelIds": [:]
+        ]
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data(#"{"models":{}}"#.utf8)
+    }
+
+    private static func isAgentModelID(_ id: String) -> Bool {
+        let normalized = id.lowercased()
+        return !normalized.contains("image")
+            && !normalized.contains("embed")
+            && !normalized.contains("audio")
+            && !normalized.contains("tts")
+            && !normalized.hasSuffix("-review")
+    }
+
+    private static func defaultAgentModelID(from ids: [String]) -> String {
+        if ids.contains("gpt-5.5") { return "gpt-5.5" }
+        if let gpt = ids.first(where: { $0.lowercased().hasPrefix("gpt-") }) { return gpt }
+        if let claude = ids.first(where: { $0.lowercased().contains("claude-sonnet") }) { return claude }
+        return ids.first ?? ""
+    }
+
+    private static func modelObject(for id: String, index: Int) -> [String: Any] {
+        [
+            "displayName": id,
+            "maxTokens": 250000,
+            "maxOutputTokens": 64000,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "quotaInfo": [
+                "remainingFraction": 1,
+                "resetTime": resetTime()
+            ],
+            "model": "MODEL_PLACEHOLDER_CR_\(index + 1)",
+            "apiProvider": apiProvider(for: id),
+            "modelProvider": modelProvider(for: id),
+            "supportsThinking": id.localizedCaseInsensitiveContains("thinking"),
+            "recommended": true,
+            "supportsEstimateTokenCounter": true
+        ]
+    }
+
+    private static func resetTime() -> String {
+        ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 60 * 60))
+    }
+
+    private static func apiProvider(for id: String) -> String {
+        id.localizedCaseInsensitiveContains("claude")
+            ? "API_PROVIDER_ANTHROPIC_VERTEX"
+            : "API_PROVIDER_OPENAI_VERTEX"
+    }
+
+    private static func modelProvider(for id: String) -> String {
+        id.localizedCaseInsensitiveContains("claude")
+            ? "MODEL_PROVIDER_ANTHROPIC"
+            : "MODEL_PROVIDER_OPENAI"
     }
 }

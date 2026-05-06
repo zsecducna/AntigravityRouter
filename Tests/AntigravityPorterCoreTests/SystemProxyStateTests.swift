@@ -10,6 +10,7 @@ final class SystemProxyStateTests: XCTestCase {
                     name: "Wi-Fi",
                     isServiceEnabled: true,
                     secureWebProxy: .init(enabled: true, host: "corp.proxy", port: 8443),
+                    autoProxy: .init(enabled: true, url: "http://corp.proxy/proxy.pac"),
                     bypassDomains: ["localhost", "*.local"]
                 )
             ],
@@ -19,11 +20,15 @@ final class SystemProxyStateTests: XCTestCase {
         let plan = SystemProxyPlanner.restorePlan(from: snapshot)
 
         XCTAssertEqual(plan.commands, [
+            .setAutoProxyURL(service: "Wi-Fi", url: "http://corp.proxy/proxy.pac"),
+            .setAutoProxyState(service: "Wi-Fi", enabled: true),
             .setSecureWebProxy(service: "Wi-Fi", host: "corp.proxy", port: 8443),
             .setSecureWebProxyState(service: "Wi-Fi", enabled: true),
             .setBypassDomains(service: "Wi-Fi", domains: ["localhost", "*.local"])
         ])
         XCTAssertEqual(plan.recoveryCommands, [
+            "networksetup -setautoproxyurl Wi-Fi http://corp.proxy/proxy.pac",
+            "networksetup -setautoproxystate Wi-Fi on",
             "networksetup -setsecurewebproxy Wi-Fi corp.proxy 8443",
             "networksetup -setsecurewebproxystate Wi-Fi on",
             "networksetup -setproxybypassdomains Wi-Fi localhost '*.local'"
@@ -44,11 +49,16 @@ final class SystemProxyStateTests: XCTestCase {
         let rollback = SystemProxyPlanner.rollbackPlan(afterFailedEnable: plan, originalSnapshot: snapshot, mutatedServices: ["Wi-Fi"])
 
         XCTAssertEqual(plan.commands, [
-            .setSecureWebProxy(service: "Wi-Fi", host: "127.0.0.1", port: 18080),
-            .setSecureWebProxyState(service: "Wi-Fi", enabled: true),
-            .setBypassDomains(service: "Wi-Fi", domains: ["localhost"])
+            .setAutoProxyURL(service: "Wi-Fi", url: "http://127.0.0.1:18080/proxy.pac"),
+            .setAutoProxyState(service: "Wi-Fi", enabled: true)
         ])
+        XCTAssertFalse(plan.commands.contains { command in
+            if case .setSecureWebProxy = command { return true }
+            if case .setSecureWebProxyState(_, true) = command { return true }
+            return false
+        })
         XCTAssertEqual(rollback.commands, [
+            .setAutoProxyState(service: "Wi-Fi", enabled: false),
             .setSecureWebProxyState(service: "Wi-Fi", enabled: false),
             .setBypassDomains(service: "Wi-Fi", domains: [])
         ])
@@ -59,6 +69,83 @@ final class SystemProxyStateTests: XCTestCase {
 
         XCTAssertEqual(command.networkSetupArguments, ["-setproxybypassdomains", "Thunderbolt Bridge", "localhost", "*.local"])
         XCTAssertEqual(command.networkSetupCommand, "networksetup -setproxybypassdomains 'Thunderbolt Bridge' localhost '*.local'")
+    }
+
+    func testNetworkSetupSnapshotParserHandlesProxyAndBypassOutput() throws {
+        let proxy = try NetworkSetupSnapshotParser.parseSecureWebProxy(
+            """
+            Enabled: Yes
+            Server: 127.0.0.1
+            Port: 8877
+            Authenticated Proxy Enabled: 0
+            """
+        )
+        let bypassDomains = NetworkSetupSnapshotParser.parseBypassDomains(
+            """
+            localhost
+            127.0.0.1
+            ::1
+            """
+        )
+
+        XCTAssertEqual(proxy, .init(enabled: true, host: "127.0.0.1", port: 8877))
+        XCTAssertEqual(bypassDomains, ["localhost", "127.0.0.1", "::1"])
+    }
+
+    func testNetworkSetupSnapshotParserHandlesDisabledProxyAndNoBypassDomains() throws {
+        let proxy = try NetworkSetupSnapshotParser.parseSecureWebProxy(
+            """
+            Enabled: No
+            Server:
+            Port: 0
+            Authenticated Proxy Enabled: 0
+            """
+        )
+        let bypassDomains = NetworkSetupSnapshotParser.parseBypassDomains("There aren't any bypass domains set on Wi-Fi.")
+
+        XCTAssertEqual(proxy, .init(enabled: false, host: nil, port: nil))
+        XCTAssertEqual(bypassDomains, [])
+    }
+
+    func testNetworkSetupSnapshotParserHandlesAutoProxyURL() throws {
+        let enabledPAC = try NetworkSetupSnapshotParser.parseAutoProxyURL(
+            """
+            URL: http://127.0.0.1:8877/proxy.pac
+            Enabled: Yes
+            """
+        )
+        let disabledPAC = try NetworkSetupSnapshotParser.parseAutoProxyURL(
+            """
+            URL: (null)
+            Enabled: No
+            """
+        )
+
+        XCTAssertEqual(enabledPAC, .init(enabled: true, url: "http://127.0.0.1:8877/proxy.pac"))
+        XCTAssertEqual(disabledPAC, .init(enabled: false, url: nil))
+    }
+
+    func testLegacySnapshotDecodingDefaultsMissingAutoProxyState() throws {
+        let data = Data(
+            """
+            {
+              "id": "legacy",
+              "createdAt": 10,
+              "services": [
+                {
+                  "name": "Wi-Fi",
+                  "isServiceEnabled": true,
+                  "secureWebProxy": {"enabled": false},
+                  "bypassDomains": []
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let snapshot = try JSONDecoder().decode(SystemProxySnapshot.self, from: data)
+
+        XCTAssertEqual(snapshot.services.first?.autoProxy, .init(enabled: false, url: nil))
     }
 
     func testManagerRollsBackMutatedServicesWhenEnableCommandFails() {
@@ -75,7 +162,7 @@ final class SystemProxyStateTests: XCTestCase {
             proxyPort: 8877,
             bypassDomains: ["localhost"]
         )
-        let failingCommand = SystemProxyCommand.setSecureWebProxyState(service: "Wi-Fi", enabled: true)
+        let failingCommand = SystemProxyCommand.setAutoProxyState(service: "Wi-Fi", enabled: true)
         let executor = RecordingSystemProxyExecutor(failingCommand: failingCommand)
         let manager = SystemProxyManager(executor: executor)
 
@@ -86,6 +173,7 @@ final class SystemProxyStateTests: XCTestCase {
             XCTAssertEqual(command, failingCommand)
             XCTAssertEqual(appliedServices, ["Wi-Fi"])
             XCTAssertEqual(rollback.attempted.commands, [
+                .setAutoProxyState(service: "Wi-Fi", enabled: false),
                 .setSecureWebProxyState(service: "Wi-Fi", enabled: false),
                 .setBypassDomains(service: "Wi-Fi", domains: [])
             ])
@@ -94,8 +182,9 @@ final class SystemProxyStateTests: XCTestCase {
         }
 
         XCTAssertEqual(executor.recordedCommands, [
-            .setSecureWebProxy(service: "Wi-Fi", host: "127.0.0.1", port: 8877),
-            .setSecureWebProxyState(service: "Wi-Fi", enabled: true),
+            .setAutoProxyURL(service: "Wi-Fi", url: "http://127.0.0.1:8877/proxy.pac"),
+            .setAutoProxyState(service: "Wi-Fi", enabled: true),
+            .setAutoProxyState(service: "Wi-Fi", enabled: false),
             .setSecureWebProxyState(service: "Wi-Fi", enabled: false),
             .setBypassDomains(service: "Wi-Fi", domains: [])
         ])
@@ -117,8 +206,8 @@ final class SystemProxyStateTests: XCTestCase {
         )
         let executor = RecordingSystemProxyExecutor(
             failingCommands: [
-                .setSecureWebProxyState(service: "Wi-Fi", enabled: true),
-                .setBypassDomains(service: "Wi-Fi", domains: [])
+                .setAutoProxyState(service: "Wi-Fi", enabled: true),
+                .setSecureWebProxyState(service: "Wi-Fi", enabled: false)
             ]
         )
         let manager = SystemProxyManager(executor: executor)
@@ -128,11 +217,11 @@ final class SystemProxyStateTests: XCTestCase {
                 return XCTFail("expected enableFailed, got \(error)")
             }
             XCTAssertEqual(rollback.results.map(\.command), [
-                .setSecureWebProxyState(service: "Wi-Fi", enabled: false)
+                .setAutoProxyState(service: "Wi-Fi", enabled: false)
             ])
             XCTAssertEqual(
                 rollback.failure,
-                .commandFailed(command: .setBypassDomains(service: "Wi-Fi", domains: []), status: 1, stderr: "boom")
+                .commandFailed(command: .setSecureWebProxyState(service: "Wi-Fi", enabled: false), status: 1, stderr: "boom")
             )
         }
     }

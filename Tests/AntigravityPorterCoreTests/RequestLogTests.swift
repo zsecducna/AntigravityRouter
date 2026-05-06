@@ -8,7 +8,7 @@ final class RequestLogTests: XCTestCase {
         for index in 1...5 {
             log.record(
                 method: "POST",
-                url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?i=\(index)")!,
+                url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:generateContent?i=\(index)")!,
                 headers: ["X-Request": "\(index)"],
                 bodyPreview: "body-\(index)"
             )
@@ -23,7 +23,7 @@ final class RequestLogTests: XCTestCase {
 
         log.record(
             method: "POST",
-            url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=api-key")!,
+            url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:generateContent?key=api-key")!,
             headers: [
                 "Authorization": "Bearer google-token",
                 "Cookie": "SID=session",
@@ -34,7 +34,7 @@ final class RequestLogTests: XCTestCase {
         )
 
         let event = try XCTUnwrap(log.snapshot().last)
-        XCTAssertEqual(event.url.absoluteString, "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=%5BREDACTED%5D")
+        XCTAssertEqual(event.url.absoluteString, "https://cloudcode-pa.googleapis.com/v1internal:generateContent?key=%5BREDACTED%5D")
         XCTAssertEqual(event.headers["Authorization"], "[REDACTED]")
         XCTAssertEqual(event.headers["Cookie"], "[REDACTED]")
         XCTAssertEqual(event.headers["X-Goog-Api-Key"], "[REDACTED]")

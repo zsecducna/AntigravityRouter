@@ -33,6 +33,16 @@ public struct CheapRouterResponse: Equatable, Sendable {
 
 public enum CheapRouterClientError: Error, Equatable, Sendable {
     case nonHTTPResponse
+    case badStatus(Int)
+    case invalidModelsResponse
+}
+
+public struct ProviderModel: Equatable, Identifiable, Sendable {
+    public var id: String
+
+    public init(id: String) {
+        self.id = id
+    }
 }
 
 public protocol CheapRouterTransport: Sendable {
@@ -94,6 +104,7 @@ public struct CheapRouterClient: Sendable {
     public func request(endpoint: CheapRouterEndpoint, body: Data) -> CheapRouterRequest {
         CheapRouterRequest(
             endpoint: endpoint,
+            method: endpoint == .models ? "GET" : "POST",
             url: endpointURL(endpoint),
             headers: [
                 "Authorization": "Bearer \(configuration.apiKey)",
@@ -107,7 +118,9 @@ public struct CheapRouterClient: Sendable {
         let cheapRouterRequest = request(endpoint: endpoint, body: body)
         var request = URLRequest(url: cheapRouterRequest.url)
         request.httpMethod = cheapRouterRequest.method
-        request.httpBody = cheapRouterRequest.body
+        if cheapRouterRequest.method != "GET" {
+            request.httpBody = cheapRouterRequest.body
+        }
         for (name, value) in cheapRouterRequest.headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
@@ -117,6 +130,64 @@ public struct CheapRouterClient: Sendable {
 
     public func send(endpoint: CheapRouterEndpoint, body: Data) async throws -> CheapRouterResponse {
         try await transport.send(urlRequest(endpoint: endpoint, body: body))
+    }
+
+    public func fetchModels() async throws -> [ProviderModel] {
+        let response = try await send(endpoint: .models, body: Data())
+        guard (200..<300).contains(response.statusCode) else {
+            throw CheapRouterClientError.badStatus(response.statusCode)
+        }
+        let models = try Self.parseModelsResponse(response.body)
+        guard !models.isEmpty else {
+            throw CheapRouterClientError.invalidModelsResponse
+        }
+        return models
+    }
+
+    public static func parseModelsResponse(_ body: Data) throws -> [ProviderModel] {
+        guard let root = try? JSONSerialization.jsonObject(with: body) else {
+            throw CheapRouterClientError.invalidModelsResponse
+        }
+        var ids: [String] = []
+        collectModelIDs(from: root, into: &ids, acceptBareStrings: false)
+        var seen = Set<String>()
+        let models = ids.compactMap { id -> ProviderModel? in
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return ProviderModel(id: trimmed)
+        }
+        return models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+    }
+
+    private static func collectModelIDs(from value: Any, into ids: inout [String], acceptBareStrings: Bool) {
+        if let string = value as? String {
+            if acceptBareStrings {
+                ids.append(string)
+            }
+            return
+        }
+        if let array = value as? [Any] {
+            for item in array {
+                collectModelIDs(from: item, into: &ids, acceptBareStrings: acceptBareStrings)
+            }
+            return
+        }
+        guard let object = value as? [String: Any] else { return }
+        if let id = object["id"] as? String {
+            ids.append(id)
+        } else if let id = object["model"] as? String, object["id"] == nil {
+            ids.append(id)
+        }
+        for key in ["data", "models"] {
+            if let nested = object[key] {
+                collectModelIDs(from: nested, into: &ids, acceptBareStrings: false)
+            }
+        }
+        for key in ["openai", "anthropic", "claude"] {
+            if let nested = object[key] {
+                collectModelIDs(from: nested, into: &ids, acceptBareStrings: true)
+            }
+        }
     }
 
     private func endpointURL(_ endpoint: CheapRouterEndpoint) -> URL {
