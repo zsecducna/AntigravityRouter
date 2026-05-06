@@ -82,6 +82,61 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(installCertificateBody.contains("Task.detached"))
     }
 
+    func testStatusTabUsesCurrentLabelsAndVisibleUpdateStatus() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"statusRow("MITM", runtime.status.proxyEnabled ? "On" : "Off")"#))
+        XCTAssertTrue(source.contains("runtime.status.providerReachability.displayText"))
+        XCTAssertTrue(source.contains("Text(updater.statusMessage)"))
+        XCTAssertFalse(source.contains(#"statusRow("Mode", runtime.status.proxyEnabled ? "listening" : "off")"#))
+    }
+
+    func testSettingsTabAllowsTypedProxyPortInput() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"TextField("8877", text: $proxyPortText)"#))
+        XCTAssertTrue(source.contains("normalizeProxyPortText"))
+        XCTAssertTrue(source.contains("commitProxyPortText"))
+        XCTAssertTrue(source.contains("min(max(port, 1024), 65535)"))
+    }
+
+    func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains("quitConfirmationPending = true"))
+        XCTAssertTrue(source.contains(#".alert("Quit AntigravityRouter?""#))
+        XCTAssertTrue(source.contains(#"Button("Quit and Relaunch Antigravity", role: .destructive)"#))
+        XCTAssertTrue(source.contains("quitAndRelaunchAntigravityWithoutProxy"))
+        XCTAssertTrue(source.contains("environmentWithoutProxy"))
+        XCTAssertTrue(source.contains(#""HTTP_PROXY""#))
+        XCTAssertTrue(source.contains(#""NODE_EXTRA_CA_CERTS""#))
+
+        let quitRange = try XCTUnwrap(source.range(of: "private func quitAndRelaunchAntigravityWithoutProxy()"))
+        let nextFunctionRange = try XCTUnwrap(source.range(of: "private func enableTransparentRouting()"))
+        let quitBody = String(source[quitRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(quitBody.contains("bundleURL = try preflightAntigravityBundleURL()"))
+        XCTAssertTrue(quitBody.contains("try await relaunchAntigravityWithoutProxy(bundleURL: bundleURL)"))
+        let relaunchRange = try XCTUnwrap(quitBody.range(of: "try await relaunchAntigravityWithoutProxy(bundleURL: bundleURL)"))
+        let stopRange = try XCTUnwrap(quitBody.range(of: "runtime.stop()"))
+        XCTAssertLessThan(relaunchRange.lowerBound, stopRange.lowerBound)
+
+        XCTAssertTrue(source.contains("let forcedDeadline = Date().addingTimeInterval(3)"))
+        XCTAssertTrue(source.contains("Antigravity did not quit cleanly"))
+    }
+
+    func testProviderReachabilityIsProbedInsteadOfStayingUnchecked() throws {
+        let runtimeSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/PorterRuntimeController.swift"))
+        let appSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(runtimeSource.contains("func refreshProviderReachability(settings: PorterSettings)"))
+        XCTAssertTrue(runtimeSource.contains("status.providerReachability = .checking"))
+        XCTAssertTrue(runtimeSource.contains("status.providerReachability = .reachable"))
+        XCTAssertTrue(runtimeSource.contains("status.providerReachability = .unreachable(message)"))
+        XCTAssertTrue(runtimeSource.contains("nextProviderReachabilityGeneration()"))
+        XCTAssertTrue(runtimeSource.contains("isCurrentProviderReachabilityGeneration(generation)"))
+        XCTAssertTrue(appSource.contains("runtime.refreshProviderReachability(settings: updated)"))
+    }
+
     func testCertificateTrustInstallerUsesNativeUserTrustSettings() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/CertificateTrustInstaller.swift"))
 

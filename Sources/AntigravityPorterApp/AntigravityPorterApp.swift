@@ -37,6 +37,7 @@ struct AntigravityRouterApp: App {
     @State private var modelsLoadFailed = false
     @State private var modelsLoading = false
     @State private var baseURLText: String
+    @State private var proxyPortText: String
     @State private var apiKey: String
     @State private var certificateInstallMessage = ""
     @State private var certificateInstallFailed = false
@@ -45,6 +46,7 @@ struct AntigravityRouterApp: App {
     @State private var launchMessage = ""
     @State private var launchFailed = false
     @State private var unsafeLogConfirmationPending = false
+    @State private var quitConfirmationPending = false
     @State private var launchedAntigravityProcess: Process?
 
     init() {
@@ -53,6 +55,7 @@ struct AntigravityRouterApp: App {
         let loaded = Self.settingsForNewLaunch(store: settingsStore)
         _settings = State(initialValue: loaded)
         _baseURLText = State(initialValue: loaded.cheapRouterBaseURL.absoluteString)
+        _proxyPortText = State(initialValue: "\(loaded.localProxyPort)")
         let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
         _apiKey = State(initialValue: savedAPIKey)
         PorterRuntimeRegistry.shared.start(settings: loaded)
@@ -79,6 +82,9 @@ struct AntigravityRouterApp: App {
             .onChange(of: settings) { _, newValue in
                 try? settingsStore.save(newValue)
             }
+            .onChange(of: settings.localProxyPort) { _, newValue in
+                proxyPortText = "\(newValue)"
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -90,12 +96,12 @@ struct AntigravityRouterApp: App {
                 set: { runtime.setProxyEnabled($0, settings: settings) }
             ))
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                statusRow("Mode", runtime.status.proxyEnabled ? "listening" : "off")
+                statusRow("MITM", runtime.status.proxyEnabled ? "On" : "Off")
                 statusRow("App version", updater.currentVersionDisplay)
                 statusRow("Updates", updater.statusMessage)
                 statusRow("Custom provider", settings.customProviderRoutingEnabled ? "enabled" : "disabled")
                 statusRow(PorterSettings.proxyListenLabel, "\(settings.localProxyHost):\(settings.localProxyPort)")
-                statusRow("cheaprouter.uk", runtime.status.cheapRouterReachable ? "reachable" : "unchecked")
+                statusRow(providerStatusLabel, runtime.status.providerReachability.displayText)
                 statusRow(PorterSettings.proxyConnectsLabel, "\(runtime.status.totalRequests)")
                 statusRow(PorterSettings.targetInferenceConnectsLabel, "\(runtime.status.targetInferenceConnects)")
                 statusRow(PorterSettings.otherHTTPSConnectsLabel, "\(runtime.status.blindTunnelConnects)")
@@ -111,6 +117,9 @@ struct AntigravityRouterApp: App {
                 }
                 .help("Check GitHub releases now; automatic checks run every hour")
                 .disabled(updater.isChecking)
+                Text(updater.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 6) {
                 Button(
@@ -139,11 +148,18 @@ struct AntigravityRouterApp: App {
             }
             Spacer()
             Button("Quit", systemImage: "power") {
-                runtime.stop()
-                NSApplication.shared.terminate(nil)
+                quitConfirmationPending = true
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .alert("Quit AntigravityRouter?", isPresented: $quitConfirmationPending) {
+            Button("Quit and Relaunch Antigravity", role: .destructive) {
+                quitAndRelaunchAntigravityWithoutProxy()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Antigravity will relaunch without proxy settings. If relaunch succeeds, the local proxy will stop and AntigravityRouter will quit.")
+        }
     }
 
     private var modelsTab: some View {
@@ -202,7 +218,10 @@ struct AntigravityRouterApp: App {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
                         if let url = URL(string: baseURLText), url.scheme == "https" {
-                            settings.cheapRouterBaseURL = url
+                            var updated = settings
+                            updated.cheapRouterBaseURL = url
+                            settings = updated
+                            runtime.refreshProviderReachability(settings: updated)
                         }
                     }
             }
@@ -220,9 +239,19 @@ struct AntigravityRouterApp: App {
             }
             GridRow {
                 Text("Local proxy port")
-                Stepper(value: $settings.localProxyPort, in: 1024...65535) {
-                    Text("\(settings.localProxyPort)")
+                HStack {
+                    TextField("8877", text: $proxyPortText)
+                        .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
+                        .frame(width: 96)
+                        .onChange(of: proxyPortText) { _, newValue in
+                            normalizeProxyPortText(newValue)
+                        }
+                        .onSubmit(commitProxyPortText)
+                        .help("Enter a local proxy port between 1024 and 65535")
+                    Stepper("", value: $settings.localProxyPort, in: 1024...65535)
+                        .labelsHidden()
+                        .help("Adjust local proxy port")
                 }
             }
             GridRow {
@@ -325,6 +354,10 @@ struct AntigravityRouterApp: App {
         return Array(lines.suffix(limit))
     }
 
+    private var providerStatusLabel: String {
+        settings.cheapRouterBaseURL.host(percentEncoded: false) ?? "Target provider"
+    }
+
     private func statusRow(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label)
@@ -342,6 +375,28 @@ struct AntigravityRouterApp: App {
             try? keychainStore.setString(trimmed, for: .cheapRouterAPIKey)
         }
         apiKey = trimmed
+    }
+
+    private func normalizeProxyPortText(_ value: String) {
+        let digits = value.filter(\.isNumber)
+        if digits != value {
+            proxyPortText = digits
+            return
+        }
+        guard let port = Int(digits), (1024...65535).contains(port) else {
+            return
+        }
+        settings.localProxyPort = port
+    }
+
+    private func commitProxyPortText() {
+        guard let port = Int(proxyPortText) else {
+            proxyPortText = "\(settings.localProxyPort)"
+            return
+        }
+        let normalized = min(max(port, 1024), 65535)
+        settings.localProxyPort = normalized
+        proxyPortText = "\(normalized)"
     }
 
     private func launchAntigravityViaPorter() {
@@ -363,6 +418,29 @@ struct AntigravityRouterApp: App {
                     launchFailed = true
                     launchMessage = "Proxy not ready: \(error.localizedDescription)"
                 }
+            }
+        }
+    }
+
+    private func quitAndRelaunchAntigravityWithoutProxy() {
+        let bundleURL: URL
+        do {
+            bundleURL = try preflightAntigravityBundleURL()
+        } catch {
+            launchFailed = true
+            launchMessage = "Direct relaunch failed: \(error.localizedDescription)"
+            return
+        }
+        launchFailed = false
+        launchMessage = "Relaunching Antigravity without proxy..."
+        Task { @MainActor in
+            do {
+                try await relaunchAntigravityWithoutProxy(bundleURL: bundleURL)
+                runtime.stop()
+                NSApplication.shared.terminate(nil)
+            } catch {
+                launchFailed = true
+                launchMessage = "Direct relaunch failed: \(error.localizedDescription)"
             }
         }
     }
@@ -437,7 +515,7 @@ struct AntigravityRouterApp: App {
                 userInfo: [NSLocalizedDescriptionKey: "missing executable \(plan.executableURL.path)"]
             )
         }
-        terminateRunningAntigravity()
+        try terminateRunningAntigravity()
 
         let process = Process()
         process.executableURL = plan.executableURL
@@ -448,7 +526,36 @@ struct AntigravityRouterApp: App {
         return process
     }
 
-    private func terminateRunningAntigravity() {
+    private func preflightAntigravityBundleURL() throws -> URL {
+        let bundleURL = AntigravityLaunchPlan.defaultBundleURL
+        guard FileManager.default.fileExists(atPath: bundleURL.path) else {
+            throw NSError(
+                domain: "AntigravityRouter.Launch",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "missing app \(bundleURL.path)"]
+            )
+        }
+        return bundleURL
+    }
+
+    private func relaunchAntigravityWithoutProxy(bundleURL: URL) async throws {
+        try terminateRunningAntigravity()
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.environment = Self.environmentWithoutProxy()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private func terminateRunningAntigravity() throws {
         let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: AntigravityLaunchPlan.bundleIdentifier)
         guard !runningApps.isEmpty else { return }
 
@@ -463,6 +570,19 @@ struct AntigravityRouterApp: App {
 
         for app in runningApps where !app.isTerminated {
             app.forceTerminate()
+        }
+
+        let forcedDeadline = Date().addingTimeInterval(3)
+        while runningApps.contains(where: { !$0.isTerminated }) && Date() < forcedDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+        }
+
+        if runningApps.contains(where: { !$0.isTerminated }) {
+            throw NSError(
+                domain: "AntigravityRouter.Launch",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Antigravity did not quit cleanly"]
+            )
         }
     }
 
@@ -574,11 +694,33 @@ struct AntigravityRouterApp: App {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
     }
+
+    private static func environmentWithoutProxy() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_FILE",
+            "REQUESTS_CA_BUNDLE",
+            "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+            "CURL_CA_BUNDLE"
+        ] {
+            environment.removeValue(forKey: key)
+        }
+        return environment
+    }
 }
 
 struct PorterAppStatus {
     var proxyEnabled = false
-    var cheapRouterReachable = false
+    var providerReachability: ProviderReachabilityState = .unchecked
     var totalRequests = 0
     var targetInferenceConnects = 0
     var blindTunnelConnects = 0
@@ -586,6 +728,26 @@ struct PorterAppStatus {
     var googleDirectRequests = 0
     var recentLogLines: [String] = []
     var lastError: String?
+}
+
+enum ProviderReachabilityState: Equatable, Sendable {
+    case unchecked
+    case checking
+    case reachable
+    case unreachable(String)
+
+    var displayText: String {
+        switch self {
+        case .unchecked:
+            "unchecked"
+        case .checking:
+            "checking"
+        case .reachable:
+            "reachable"
+        case .unreachable:
+            "unreachable"
+        }
+    }
 }
 
 private enum PorterTab: Hashable {

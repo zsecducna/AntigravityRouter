@@ -16,6 +16,9 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     private var server: NWProxyServer?
     private var activeProxyHost = "127.0.0.1"
     private var activeProxyPort = 8877
+    private var providerReachabilityTask: URLSessionDataTask?
+    private var providerReachabilityGeneration = 0
+    private let providerReachabilityLock = NSLock()
     private let settingsStore = UserDefaultsSettingsStore()
     private let keychainStore = SecurityKeychainStore()
     private let certificateStore: any KeychainStoring
@@ -65,6 +68,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     }
 
     func start(settings: PorterSettings) {
+        refreshProviderReachability(settings: settings)
         if let server {
             guard activeProxyHost != settings.localProxyHost || activeProxyPort != settings.localProxyPort else {
                 return
@@ -115,6 +119,58 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
             status.proxyEnabled = false
         }
         appendRuntimeLog("proxy OFF")
+    }
+
+    func refreshProviderReachability(settings: PorterSettings) {
+        let generation = nextProviderReachabilityGeneration()
+        providerReachabilityTask?.cancel()
+        updateStatus { status in
+            status.providerReachability = .checking
+        }
+
+        var request = URLRequest(url: settings.cheapRouterBaseURL)
+        request.httpMethod = "HEAD"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 5
+
+        let configuration = URLSessionCheapRouterTransport.proxyBypassingConfiguration()
+        configuration.timeoutIntervalForRequest = 5
+        configuration.timeoutIntervalForResource = 5
+        let session = URLSession(configuration: configuration)
+        let task = session.dataTask(with: request) { [weak self] _, response, error in
+            defer { session.finishTasksAndInvalidate() }
+            if let error = error as NSError?, error.code == NSURLErrorCancelled {
+                return
+            }
+            guard self?.isCurrentProviderReachabilityGeneration(generation) == true else {
+                return
+            }
+            if let response = response as? HTTPURLResponse, (100..<600).contains(response.statusCode) {
+                self?.updateStatus { status in
+                    status.providerReachability = .reachable
+                }
+                return
+            }
+            let message = error?.localizedDescription ?? "invalid HTTP response"
+            self?.updateStatus { status in
+                status.providerReachability = .unreachable(message)
+            }
+        }
+        providerReachabilityTask = task
+        task.resume()
+    }
+
+    private func nextProviderReachabilityGeneration() -> Int {
+        providerReachabilityLock.lock()
+        defer { providerReachabilityLock.unlock() }
+        providerReachabilityGeneration += 1
+        return providerReachabilityGeneration
+    }
+
+    private func isCurrentProviderReachabilityGeneration(_ generation: Int) -> Bool {
+        providerReachabilityLock.lock()
+        defer { providerReachabilityLock.unlock() }
+        return providerReachabilityGeneration == generation
     }
 
     func truncateLogs() {

@@ -13,6 +13,7 @@ The app is intentionally narrow in scope. It is not a general-purpose system-wid
 - Forwards supported Antigravity generation requests directly to Google when custom provider routing is disabled.
 - Keeps Antigravity model discovery, auth, account, and unrelated Google API requests on the Google/direct path.
 - Shows target-provider models in the app UI by calling the configured provider's `/v1/models` endpoint.
+- Relaunches Antigravity without proxy settings when you confirm Quit.
 
 Default target provider:
 
@@ -168,6 +169,8 @@ sequenceDiagram
 
 When custom provider routing is disabled, AntigravityRouter still allows the local proxy flow, but supported model requests are forwarded to Google's CloudCode endpoint instead of the target provider.
 
+The Status tab reports `MITM` as `On` or `Off`. It also probes the configured provider base URL so the provider row moves from `checking` to `reachable` or `unreachable` instead of staying indefinitely unchecked.
+
 ## Security And Privacy Notes
 
 - The provider API key is stored in the macOS Keychain.
@@ -221,3 +224,7 @@ Antigravity's internal model discovery should remain Google-direct. Provider mod
 ### Logs are too large
 
 Use `Truncate` in the Log tab and reduce `Tail log lines` in Settings.
+
+### Quit behavior
+
+Clicking `Quit` asks for confirmation. Confirming relaunches Antigravity without proxy-related environment variables, stops the local proxy after the relaunch succeeds, and then exits AntigravityRouter.

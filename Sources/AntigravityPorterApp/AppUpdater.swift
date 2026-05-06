@@ -389,7 +389,7 @@ final class AppUpdateController: ObservableObject {
         lastCheckedAt = Date()
         switch result {
         case let .upToDate(version):
-            statusMessage = "current (\(version))"
+            statusMessage = "up-to-date (\(version))"
         case let .updateReady(version, dmgURL):
             let alreadyOpened = defaults.string(forKey: Self.openedVersionKey) == version
             if forceOpen {

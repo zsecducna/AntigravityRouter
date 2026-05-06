@@ -49,6 +49,19 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     @MainActor
+    func testUpToDateStatusUsesUserVisibleWording() {
+        let controller = AppUpdateController(
+            currentVersion: "0.1.2",
+            service: AppUpdateService(client: FakeAppUpdateClient.empty, verifier: PassingAppUpdateVerifier()),
+            defaults: UserDefaults(suiteName: "AntigravityRouterUpdateTests-\(UUID().uuidString)") ?? .standard
+        )
+
+        controller.handle(.upToDate(version: "v0.1.2"), forceOpen: true)
+
+        XCTAssertEqual(controller.statusMessage, "up-to-date (v0.1.2)")
+    }
+
+    @MainActor
     func testManualUpdateOpensInstaller() {
         var openedURLs: [URL] = []
         let controller = AppUpdateController(
