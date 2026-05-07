@@ -13,9 +13,11 @@ final class ProxyCoreTests: XCTestCase {
         let disable = TransparentRoutingScript.disable()
 
         XCTAssertTrue(enable.contains("cloudcode-pa.googleapis.com"))
-        XCTAssertFalse(enable.contains("daily-cloudcode-pa.googleapis.com"))
+        XCTAssertTrue(enable.contains("daily-cloudcode-pa.googleapis.com"))
         XCTAssertTrue(enable.contains("127.0.0.1 cloudcode-pa.googleapis.com"))
         XCTAssertTrue(enable.contains("::ffff:127.0.0.1 cloudcode-pa.googleapis.com"))
+        XCTAssertTrue(enable.contains("127.0.0.1 daily-cloudcode-pa.googleapis.com"))
+        XCTAssertTrue(enable.contains("::ffff:127.0.0.1 daily-cloudcode-pa.googleapis.com"))
         XCTAssertTrue(enable.contains("port 443 -> 127.0.0.1 port 8877"))
         XCTAssertTrue(enable.contains("rdr-anchor"))
         XCTAssertTrue(enable.contains("/etc/pf.conf"))

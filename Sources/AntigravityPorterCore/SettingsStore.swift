@@ -66,14 +66,21 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         case logTailLineLimit
     }
 
+    private enum LegacyCodingKeys: String, CodingKey {
+        case routedModels
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try? decoder.container(keyedBy: LegacyCodingKeys.self)
+        let legacyRoutedModels = (try? legacyContainer?.decodeIfPresent([String].self, forKey: .routedModels)) ?? nil
+        let migratedRoutingEnabled = legacyRoutedModels?.isEmpty == false
         self.init(
             cheapRouterBaseURL: try container.decode(URL.self, forKey: .cheapRouterBaseURL),
             localProxyHost: try container.decode(String.self, forKey: .localProxyHost),
             localProxyPort: try container.decode(Int.self, forKey: .localProxyPort),
             launchAtLoginEnabled: try container.decode(Bool.self, forKey: .launchAtLoginEnabled),
-            customProviderRoutingEnabled: try container.decodeIfPresent(Bool.self, forKey: .customProviderRoutingEnabled) ?? false,
+            customProviderRoutingEnabled: try container.decodeIfPresent(Bool.self, forKey: .customProviderRoutingEnabled) ?? migratedRoutingEnabled,
             rawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .rawHTTPLoggingEnabled) ?? true,
             unsafeFullRawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .unsafeFullRawHTTPLoggingEnabled) ?? false,
             logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit

@@ -63,7 +63,9 @@ final class SecurityPostureTests: XCTestCase {
         ]
         let source = try sourceFiles.map { try String(contentsOf: $0) }.joined(separator: "\n")
 
-        XCTAssertFalse(source.contains("routedModels"))
+        XCTAssertFalse(source.contains("var routedModels"))
+        XCTAssertFalse(source.contains("let routedModels"))
+        XCTAssertFalse(source.contains("case routedModels ="))
         XCTAssertFalse(source.contains("routesViaCheapRouter"))
         XCTAssertFalse(source.contains("setRouteViaCheapRouter"))
     }
@@ -236,6 +238,7 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.OpenConfiguration()"))
         XCTAssertTrue(source.contains("configuration.arguments = arguments"))
         XCTAssertTrue(source.contains("private func openAntigravity("))
+        XCTAssertTrue(source.contains("try AntigravityUserSettings.applyLocalProxyOverrides(proxyPort: settings.localProxyPort)"))
         XCTAssertTrue(source.contains("try AntigravityUserSettings.removeLocalProxyOverrides(proxyPort: settings.localProxyPort)"))
         XCTAssertFalse(source.contains("try process.run()"))
         XCTAssertFalse(source.contains("forceTerminate()"))
@@ -268,6 +271,47 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertNil(object["http.proxy"])
         XCTAssertEqual(object["claudeCode.initialPermissionMode"] as? String, "plan")
         XCTAssertNotNil(object["http.noProxy"])
+    }
+
+    func testLaunchAppliesLocalCloudCodeEndpointOverride() throws {
+        let directory = try temporaryDirectory()
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try Data(
+            #"""
+            {
+              "claudeCode.initialPermissionMode": "plan",
+              "jetski.cloudCodeUrl": "https://daily-cloudcode-pa.googleapis.com",
+              "http.noProxy": ["localhost", "127.0.0.1"]
+            }
+            """#.utf8
+        ).write(to: settingsURL)
+
+        let changed = try AntigravityUserSettings.applyLocalProxyOverrides(
+            settingsURL: settingsURL,
+            proxyPort: 8877
+        )
+
+        XCTAssertTrue(changed)
+        let data = try Data(contentsOf: settingsURL)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["jetski.cloudCodeUrl"] as? String, "https://127.0.0.1:8877")
+        XCTAssertEqual(object["claudeCode.initialPermissionMode"] as? String, "plan")
+        XCTAssertNotNil(object["http.noProxy"])
+    }
+
+    func testLaunchCreatesSettingsFileForLocalCloudCodeEndpointOverride() throws {
+        let directory = try temporaryDirectory()
+        let settingsURL = directory.appendingPathComponent("User/settings.json")
+
+        let changed = try AntigravityUserSettings.applyLocalProxyOverrides(
+            settingsURL: settingsURL,
+            proxyPort: 8877
+        )
+
+        XCTAssertTrue(changed)
+        let data = try Data(contentsOf: settingsURL)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["jetski.cloudCodeUrl"] as? String, "https://127.0.0.1:8877")
     }
 
     func testDirectQuitRelaunchKeepsUnrelatedProxySettings() throws {

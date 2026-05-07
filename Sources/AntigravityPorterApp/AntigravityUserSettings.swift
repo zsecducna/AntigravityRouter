@@ -8,6 +8,28 @@ enum AntigravityUserSettings {
     }
 
     @discardableResult
+    static func applyLocalProxyOverrides(settingsURL: URL = defaultSettingsURL(), proxyPort: Int) throws -> Bool {
+        var object: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: settingsURL.path) {
+            let data = try Data(contentsOf: settingsURL)
+            object = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        } else {
+            try FileManager.default.createDirectory(
+                at: settingsURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let localCloudCodeURL = "https://127.0.0.1:\(proxyPort)"
+        guard object["jetski.cloudCodeUrl"] as? String != localCloudCodeURL else { return false }
+        object["jetski.cloudCodeUrl"] = localCloudCodeURL
+
+        let output = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try output.write(to: settingsURL, options: .atomic)
+        return true
+    }
+
+    @discardableResult
     static func removeLocalProxyOverrides(settingsURL: URL = defaultSettingsURL(), proxyPort: Int) throws -> Bool {
         guard FileManager.default.fileExists(atPath: settingsURL.path) else { return false }
         let data = try Data(contentsOf: settingsURL)

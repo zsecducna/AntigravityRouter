@@ -6,7 +6,8 @@ public enum TransparentRoutingScript {
     private static let pfConfFile = "/etc/pf.conf"
 
     public static let hosts = [
-        "cloudcode-pa.googleapis.com"
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com"
     ]
 
     public static func enable(proxyPort: Int) -> String {

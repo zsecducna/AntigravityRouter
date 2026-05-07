@@ -50,6 +50,49 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(loaded.logTailLineLimit, 50)
     }
 
+    func testLegacyRoutedModelsEnableCustomProviderRouting() throws {
+        let storage = InMemorySettingsDataStore(storage: [
+            "settings": Data(
+                #"""
+                {
+                  "cheapRouterBaseURL": "https://router.example",
+                  "localProxyHost": "127.0.0.1",
+                  "localProxyPort": 8877,
+                  "launchAtLoginEnabled": false,
+                  "routedModels": ["gpt-5.5"]
+                }
+                """#.utf8
+            )
+        ])
+        let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
+
+        let loaded = store.load()
+
+        XCTAssertTrue(loaded.customProviderRoutingEnabled)
+    }
+
+    func testExplicitCustomProviderRoutingFlagWinsOverLegacyRoutedModels() throws {
+        let storage = InMemorySettingsDataStore(storage: [
+            "settings": Data(
+                #"""
+                {
+                  "cheapRouterBaseURL": "https://router.example",
+                  "localProxyHost": "127.0.0.1",
+                  "localProxyPort": 8877,
+                  "launchAtLoginEnabled": false,
+                  "customProviderRoutingEnabled": false,
+                  "routedModels": ["gpt-5.5"]
+                }
+                """#.utf8
+            )
+        ])
+        let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
+
+        let loaded = store.load()
+
+        XCTAssertFalse(loaded.customProviderRoutingEnabled)
+    }
+
     func testLogTailLineLimitIsClamped() {
         let low = PorterSettings(
             cheapRouterBaseURL: URL(string: "https://router.example")!,

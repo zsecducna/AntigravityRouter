@@ -824,12 +824,18 @@ struct AntigravityRouterApp: App {
             )
         }
         try terminateRunningAntigravity()
+        try AntigravityUserSettings.applyLocalProxyOverrides(proxyPort: settings.localProxyPort)
 
-        return try await openAntigravity(
-            bundleURL: bundleURL,
-            arguments: plan.arguments,
-            environment: plan.environment
-        )
+        do {
+            return try await openAntigravity(
+                bundleURL: bundleURL,
+                arguments: plan.arguments,
+                environment: plan.environment
+            )
+        } catch {
+            _ = try? AntigravityUserSettings.removeLocalProxyOverrides(proxyPort: settings.localProxyPort)
+            throw error
+        }
     }
 
     private func preflightAntigravityBundleURL() throws -> URL {
