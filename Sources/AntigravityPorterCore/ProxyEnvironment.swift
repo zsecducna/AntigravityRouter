@@ -1,8 +1,27 @@
 import Foundation
 
 public enum ProxyEnvironment {
-    public static let noProxyList = "localhost,127.0.0.1,::1,cheaprouter.uk"
-    public static let chromiumBypassList = "localhost;127.0.0.1;::1;cheaprouter.uk"
+    public static let noProxyList = [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "cheaprouter.uk",
+        "accounts.google.com",
+        "oauth2.googleapis.com",
+        "www.googleapis.com",
+        "google.com",
+        ".google.com"
+    ].joined(separator: ",")
+    public static let chromiumBypassList = [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "cheaprouter.uk",
+        "accounts.google.com",
+        "oauth2.googleapis.com",
+        "www.googleapis.com",
+        "*.google.com"
+    ].joined(separator: ";")
 
     public static func variables(proxyHost: String, proxyPort: Int) -> [String: String] {
         let proxyURL = "http://\(proxyHost):\(proxyPort)"

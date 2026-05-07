@@ -52,7 +52,7 @@ struct AntigravityRouterApp: App {
     @State private var launchFailed = false
     @State private var unsafeLogConfirmationPending = false
     @State private var quitConfirmationPending = false
-    @State private var launchedAntigravityProcess: Process?
+    @State private var launchedAntigravityApp: NSRunningApplication?
 
     init() {
         let settingsStore = UserDefaultsSettingsStore()
@@ -640,7 +640,7 @@ struct AntigravityRouterApp: App {
                 switch result {
                 case .success:
                     do {
-                        launchedAntigravityProcess = try launchAntigravity()
+                        launchedAntigravityApp = try await launchAntigravity()
                         launchFailed = false
                         launchMessage = "Relaunched with proxy env + Electron proxy"
                         if completeSetupOnSuccess {
@@ -746,7 +746,8 @@ struct AntigravityRouterApp: App {
         }
     }
 
-    private func launchAntigravity() throws -> Process {
+    private func launchAntigravity() async throws -> NSRunningApplication? {
+        let bundleURL = try preflightAntigravityBundleURL()
         let caDER = try certificateAuthority.exportSigningIdentityDER()
         let caPEMURL = try writeCertificatePEMForRuntime(caDER)
         let plan = AntigravityLaunchPlan.make(
@@ -769,13 +770,11 @@ struct AntigravityRouterApp: App {
         }
         try terminateRunningAntigravity()
 
-        let process = Process()
-        process.executableURL = plan.executableURL
-        process.arguments = plan.arguments
-        process.environment = plan.environment
-        process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        try process.run()
-        return process
+        return try await openAntigravity(
+            bundleURL: bundleURL,
+            arguments: plan.arguments,
+            environment: plan.environment
+        )
     }
 
     private func preflightAntigravityBundleURL() throws -> URL {
@@ -792,16 +791,28 @@ struct AntigravityRouterApp: App {
 
     private func relaunchAntigravityWithoutProxy(bundleURL: URL) async throws {
         try terminateRunningAntigravity()
+        _ = try await openAntigravity(
+            bundleURL: bundleURL,
+            arguments: [],
+            environment: Self.environmentWithoutProxy()
+        )
+    }
 
+    private func openAntigravity(
+        bundleURL: URL,
+        arguments: [String],
+        environment: [String: String]
+    ) async throws -> NSRunningApplication? {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        configuration.environment = Self.environmentWithoutProxy()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, error in
+        configuration.arguments = arguments
+        configuration.environment = environment
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NSRunningApplication?, any Error>) in
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { runningApp, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
-                    continuation.resume()
+                    continuation.resume(returning: runningApp)
                 }
             }
         }
@@ -815,17 +826,8 @@ struct AntigravityRouterApp: App {
             app.terminate()
         }
 
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(20)
         while runningApps.contains(where: { !$0.isTerminated }) && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
-        }
-
-        for app in runningApps where !app.isTerminated {
-            app.forceTerminate()
-        }
-
-        let forcedDeadline = Date().addingTimeInterval(3)
-        while runningApps.contains(where: { !$0.isTerminated }) && Date() < forcedDeadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
         }
 

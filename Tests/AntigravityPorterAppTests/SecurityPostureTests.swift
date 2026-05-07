@@ -177,7 +177,11 @@ final class SecurityPostureTests: XCTestCase {
         let stopRange = try XCTUnwrap(quitBody.range(of: "runtime.stop()"))
         XCTAssertLessThan(relaunchRange.lowerBound, stopRange.lowerBound)
 
-        XCTAssertTrue(source.contains("let forcedDeadline = Date().addingTimeInterval(3)"))
+        XCTAssertTrue(source.contains("NSWorkspace.OpenConfiguration()"))
+        XCTAssertTrue(source.contains("configuration.arguments = arguments"))
+        XCTAssertTrue(source.contains("private func openAntigravity("))
+        XCTAssertFalse(source.contains("try process.run()"))
+        XCTAssertFalse(source.contains("forceTerminate()"))
         XCTAssertTrue(source.contains("Antigravity did not quit cleanly"))
     }
 

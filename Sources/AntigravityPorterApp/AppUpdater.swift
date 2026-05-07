@@ -336,18 +336,21 @@ final class AppUpdateController: ObservableObject {
     private let service: AppUpdateService
     private let defaults: UserDefaults
     private let openDMG: @MainActor (URL) -> Bool
+    private let quitForInstall: @MainActor () -> Void
     private var timer: Timer?
 
     init(
         currentVersion: String? = AppUpdateController.bundleShortVersion(),
         service: AppUpdateService = AppUpdateService(),
         defaults: UserDefaults = .standard,
-        openDMG: @escaping @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) }
+        openDMG: @escaping @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) },
+        quitForInstall: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
     ) {
         self.currentVersion = currentVersion
         self.service = service
         self.defaults = defaults
         self.openDMG = openDMG
+        self.quitForInstall = quitForInstall
     }
 
     func startAutomaticChecks() {
@@ -395,7 +398,8 @@ final class AppUpdateController: ObservableObject {
             if forceOpen {
                 if openDMG(dmgURL) {
                     defaults.set(version, forKey: Self.openedVersionKey)
-                    statusMessage = "opened installer \(version)"
+                    statusMessage = "opened installer \(version); quitting app for install"
+                    quitForInstall()
                 } else {
                     statusMessage = "downloaded \(version), open failed"
                 }

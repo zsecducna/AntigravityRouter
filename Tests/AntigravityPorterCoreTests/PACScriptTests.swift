@@ -16,4 +16,18 @@ final class PACScriptTests: XCTestCase {
         XCTAssertFalse(script.contains("accounts.google.com"))
         XCTAssertFalse(script.contains("cheaprouter.uk"))
     }
+
+    func testProxyEnvironmentBypassesGoogleOAuthAndAccountHosts() {
+        let variables = ProxyEnvironment.variables(proxyHost: "127.0.0.1", proxyPort: 8877)
+
+        XCTAssertEqual(variables["HTTPS_PROXY"], "http://127.0.0.1:8877")
+        XCTAssertTrue(ProxyEnvironment.noProxyList.contains("accounts.google.com"))
+        XCTAssertTrue(ProxyEnvironment.noProxyList.contains("oauth2.googleapis.com"))
+        XCTAssertTrue(ProxyEnvironment.noProxyList.contains("www.googleapis.com"))
+        XCTAssertTrue(ProxyEnvironment.noProxyList.contains(".google.com"))
+        XCTAssertTrue(ProxyEnvironment.chromiumBypassList.contains("accounts.google.com"))
+        XCTAssertTrue(ProxyEnvironment.chromiumBypassList.contains("oauth2.googleapis.com"))
+        XCTAssertTrue(ProxyEnvironment.chromiumBypassList.contains("*.google.com"))
+        XCTAssertFalse(ProxyEnvironment.chromiumBypassList.contains("cloudcode-pa.googleapis.com"))
+    }
 }

@@ -31,6 +31,7 @@ final class AppUpdaterTests: XCTestCase {
     @MainActor
     func testBackgroundUpdateDoesNotOpenInstaller() {
         var openedURLs: [URL] = []
+        var quitCount = 0
         let controller = AppUpdateController(
             currentVersion: "0.1.1",
             service: AppUpdateService(client: FakeAppUpdateClient.empty, verifier: PassingAppUpdateVerifier()),
@@ -38,6 +39,9 @@ final class AppUpdaterTests: XCTestCase {
             openDMG: { url in
                 openedURLs.append(url)
                 return true
+            },
+            quitForInstall: {
+                quitCount += 1
             }
         )
         let dmgURL = URL(fileURLWithPath: "/tmp/AntigravityRouter-v0.1.2-macos-arm64.dmg")
@@ -45,6 +49,7 @@ final class AppUpdaterTests: XCTestCase {
         controller.handle(.updateReady(version: "v0.1.2", dmgURL: dmgURL), forceOpen: false)
 
         XCTAssertTrue(openedURLs.isEmpty)
+        XCTAssertEqual(quitCount, 0)
         XCTAssertEqual(controller.statusMessage, "installer ready v0.1.2")
     }
 
@@ -62,8 +67,9 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     @MainActor
-    func testManualUpdateOpensInstaller() {
+    func testManualUpdateOpensInstallerAndQuitsAppForReplacement() {
         var openedURLs: [URL] = []
+        var quitCount = 0
         let controller = AppUpdateController(
             currentVersion: "0.1.1",
             service: AppUpdateService(client: FakeAppUpdateClient.empty, verifier: PassingAppUpdateVerifier()),
@@ -71,6 +77,9 @@ final class AppUpdaterTests: XCTestCase {
             openDMG: { url in
                 openedURLs.append(url)
                 return true
+            },
+            quitForInstall: {
+                quitCount += 1
             }
         )
         let dmgURL = URL(fileURLWithPath: "/tmp/AntigravityRouter-v0.1.2-macos-arm64.dmg")
@@ -78,7 +87,28 @@ final class AppUpdaterTests: XCTestCase {
         controller.handle(.updateReady(version: "v0.1.2", dmgURL: dmgURL), forceOpen: true)
 
         XCTAssertEqual(openedURLs, [dmgURL])
-        XCTAssertEqual(controller.statusMessage, "opened installer v0.1.2")
+        XCTAssertEqual(quitCount, 1)
+        XCTAssertEqual(controller.statusMessage, "opened installer v0.1.2; quitting app for install")
+    }
+
+    @MainActor
+    func testManualUpdateDoesNotQuitWhenInstallerOpenFails() {
+        var quitCount = 0
+        let controller = AppUpdateController(
+            currentVersion: "0.1.1",
+            service: AppUpdateService(client: FakeAppUpdateClient.empty, verifier: PassingAppUpdateVerifier()),
+            defaults: UserDefaults(suiteName: "AntigravityRouterUpdateTests-\(UUID().uuidString)") ?? .standard,
+            openDMG: { _ in false },
+            quitForInstall: {
+                quitCount += 1
+            }
+        )
+        let dmgURL = URL(fileURLWithPath: "/tmp/AntigravityRouter-v0.1.2-macos-arm64.dmg")
+
+        controller.handle(.updateReady(version: "v0.1.2", dmgURL: dmgURL), forceOpen: true)
+
+        XCTAssertEqual(quitCount, 0)
+        XCTAssertEqual(controller.statusMessage, "downloaded v0.1.2, open failed")
     }
 
     func testReleaseDecodesGitHubSnakeCaseFields() throws {
