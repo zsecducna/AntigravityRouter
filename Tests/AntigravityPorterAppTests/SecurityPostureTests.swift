@@ -111,6 +111,15 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains("min(max(port, 1024), 65535)"))
     }
 
+    func testUnsafeFullBodyLogConfirmationUsesClickableInlineControls() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains("unsafeFullBodyLogConfirmation"))
+        XCTAssertTrue(source.contains(#"Button("Enable", systemImage: "exclamationmark.triangle")"#))
+        XCTAssertTrue(source.contains(#"Button("Cancel", systemImage: "xmark")"#))
+        XCTAssertFalse(source.contains(#".alert("Enable unsafe full body log?""#))
+    }
+
     func testFirstRunSetupWizardGuidesInstallAndLaunch() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
@@ -163,6 +172,20 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(invalidateBody.contains("providerModelsCheckSucceeded = false"))
         XCTAssertTrue(invalidateBody.contains("providerModels = []"))
         XCTAssertTrue(invalidateBody.contains(#"modelsMessage = "Not checked""#))
+    }
+
+    func testProviderURLFieldCommitsBeforeStatusAndModelRefreshUseIt() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(".onChange(of: selectedTab)"))
+        XCTAssertTrue(source.contains("commitProviderBaseURLIfValid()"))
+        XCTAssertFalse(source.contains(#"Text("cheaprouter.uk")"#))
+
+        let refreshRange = try XCTUnwrap(source.range(of: "private func refreshProviderModels()"))
+        let nextFunctionRange = try XCTUnwrap(source.range(of: "private func installCertificate()"))
+        let refreshBody = String(source[refreshRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(refreshBody.contains("guard commitProviderBaseURL() else { return }"))
+        XCTAssertTrue(refreshBody.contains("settings.cheapRouterBaseURL"))
     }
 
     func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {

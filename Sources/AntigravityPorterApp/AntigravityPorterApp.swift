@@ -100,6 +100,11 @@ struct AntigravityRouterApp: App {
             .onChange(of: apiKey) { _, _ in
                 invalidateProviderModelsCheck()
             }
+            .onChange(of: selectedTab) { _, newValue in
+                if newValue == .status || newValue == .models {
+                    commitProviderBaseURLIfValid()
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -420,7 +425,7 @@ struct AntigravityRouterApp: App {
     private var settingsTab: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
             GridRow {
-                    Text("cheaprouter.uk")
+                    Text("Provider URL")
                     TextField("Base URL", text: $baseURLText)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit {
@@ -497,6 +502,12 @@ struct AntigravityRouterApp: App {
                         .font(.system(.body, design: .monospaced))
                 }
             }
+            if unsafeLogConfirmationPending {
+                GridRow {
+                    Text("")
+                    unsafeFullBodyLogConfirmation
+                }
+            }
             GridRow {
                 Text("CA certificate")
                 VStack(alignment: .leading, spacing: 6) {
@@ -513,15 +524,26 @@ struct AntigravityRouterApp: App {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .alert("Enable unsafe full body log?", isPresented: $unsafeLogConfirmationPending) {
-            Button("Enable", role: .destructive) {
-                settings.unsafeFullRawHTTPLoggingEnabled = true
-            }
-            Button("Cancel", role: .cancel) {
-                settings.unsafeFullRawHTTPLoggingEnabled = false
-            }
-        } message: {
+    }
+
+    private var unsafeFullBodyLogConfirmation: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Full prompt and response bodies will be stored in local logs until disabled or the app restarts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Enable", systemImage: "exclamationmark.triangle") {
+                    settings.unsafeFullRawHTTPLoggingEnabled = true
+                    unsafeLogConfirmationPending = false
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Enable full HTTP body logging")
+                Button("Cancel", systemImage: "xmark") {
+                    settings.unsafeFullRawHTTPLoggingEnabled = false
+                    unsafeLogConfirmationPending = false
+                }
+                .help("Keep full HTTP body logging disabled")
+            }
         }
     }
 
@@ -587,6 +609,21 @@ struct AntigravityRouterApp: App {
             return false
         }
         modelsLoadFailed = false
+        var updated = settings
+        updated.cheapRouterBaseURL = url
+        settings = updated
+        runtime.refreshProviderReachability(settings: updated)
+        return true
+    }
+
+    @discardableResult
+    private func commitProviderBaseURLIfValid() -> Bool {
+        guard let url = URL(string: baseURLText), url.scheme == "https" else {
+            return false
+        }
+        guard url != settings.cheapRouterBaseURL else {
+            return true
+        }
         var updated = settings
         updated.cheapRouterBaseURL = url
         settings = updated
@@ -856,6 +893,7 @@ struct AntigravityRouterApp: App {
     }
 
     private func refreshProviderModels() {
+        guard commitProviderBaseURL() else { return }
         modelsLoading = true
         modelsLoadFailed = false
         providerModelsCheckSucceeded = false
