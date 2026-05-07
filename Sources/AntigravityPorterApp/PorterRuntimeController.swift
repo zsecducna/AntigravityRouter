@@ -215,10 +215,12 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
                 status.routedRequests += 1
             }
             appendRuntimeLog(line)
-        case let .direct(line):
+        case let .directModel(line):
             updateStatus { status in
                 status.googleDirectRequests += 1
             }
+            appendRuntimeLog(line)
+        case let .direct(line):
             appendRuntimeLog(line)
         case let .log(line):
             appendRuntimeLog(line)
@@ -356,6 +358,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
 enum ProxyRuntimeEvent: Sendable {
     case connect(String, targetInference: Bool)
     case routed(String)
+    case directModel(String)
     case direct(String)
     case log(String)
     case failed(String)

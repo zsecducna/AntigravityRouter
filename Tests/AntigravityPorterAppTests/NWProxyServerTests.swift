@@ -36,22 +36,23 @@ final class NWProxyServerTests: XCTestCase {
         XCTAssertTrue(rendered.contains("<truncated body bytes=4>"))
     }
 
-    func testRawHTTPPolicyUnsafeModeStillRedactsCredentials() {
+    func testRawHTTPPolicyUnsafeModeKeepsRequestTargetAndBodyWithCredentialHeadersRedacted() {
         let raw = Data("""
         POST /v1internal:generateContent?key=google-key HTTP/1.1\r
         Host: cloudcode-pa.googleapis.com\r
         Authorization: Bearer google-token\r
+        X-Trace-Id: trace-123\r
         \r
         {"prompt":"visible body"}
         """.utf8)
 
         let rendered = HTTPRawLogPolicy.renderHTTPRequest(raw, unsafeFullRaw: true)
 
+        XCTAssertTrue(rendered.contains("POST /v1internal:generateContent?key=google-key HTTP/1.1"))
         XCTAssertTrue(rendered.contains("Authorization: [REDACTED]"))
-        XCTAssertTrue(rendered.contains("key=%5BREDACTED%5D"))
+        XCTAssertTrue(rendered.contains("X-Trace-Id: trace-123"))
         XCTAssertTrue(rendered.contains("visible body"))
         XCTAssertFalse(rendered.contains("google-token"))
-        XCTAssertFalse(rendered.contains("google-key"))
     }
 
     func testFileKeychainStoreUsesPrivatePermissions() throws {

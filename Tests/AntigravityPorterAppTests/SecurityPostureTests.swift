@@ -91,6 +91,18 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains(#"statusRow("Mode", runtime.status.proxyEnabled ? "listening" : "off")"#))
     }
 
+    func testGoogleStartupRequestsDoNotCountAsDirectModelRequests() throws {
+        let root = packageRoot()
+        let runtimeSource = try String(contentsOf: root.appendingPathComponent("Sources/AntigravityPorterApp/PorterRuntimeController.swift"))
+        let proxySource = try String(contentsOf: root.appendingPathComponent("Sources/AntigravityPorterApp/NWProxyServer.swift"))
+
+        XCTAssertTrue(runtimeSource.contains("case let .directModel(line):"))
+        XCTAssertTrue(runtimeSource.contains("status.googleDirectRequests += 1"))
+        XCTAssertTrue(runtimeSource.contains("case let .direct(line):\n            appendRuntimeLog(line)"))
+        XCTAssertTrue(proxySource.contains(".directModel(\"Google direct model="))
+        XCTAssertTrue(proxySource.contains(#".direct("\(source) \(routingHost)\(request.path) status=\(response.statusCode)")"#))
+    }
+
     func testStatusTabFitsInMenuBarWindow() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 

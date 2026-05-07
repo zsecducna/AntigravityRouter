@@ -342,7 +342,7 @@ final class NWProxyServer: @unchecked Sendable {
             switch decision {
             case let .forwardToGoogle(forwardedRequest, metadata):
                 let response = try forwardToGoogle(host: routingHost, request: forwardedRequest)
-                eventSink(.direct("Google direct model=\(metadata.model) action=\(metadata.action.logName) status=\(response.statusCode)"))
+                eventSink(.directModel("Google direct model=\(metadata.model) action=\(metadata.action.logName) status=\(response.statusCode)"))
                 try writeHTTPResponse(response, on: tlsConnection)
             case let .routeToCheapRouter(payload, metadata):
                 let response = try routeToCheapRouter(payload: payload, metadata: metadata, settings: settings)
@@ -821,7 +821,7 @@ enum HTTPRawLogPolicy {
 
         let normalized = headerText.replacingOccurrences(of: "\r\n", with: "\n")
         var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        if let first = lines.first {
+        if let first = lines.first, !unsafeFullRaw {
             lines[0] = redactedRequestLine(first)
         }
         for index in lines.indices.dropFirst() {
@@ -840,6 +840,7 @@ enum HTTPRawLogPolicy {
 
     static func redactedURLString(_ url: URL?, unsafeFullRaw: Bool) -> String {
         guard let url else { return "<nil>" }
+        guard !unsafeFullRaw else { return url.absoluteString }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let queryItems = components?.queryItems
         components?.queryItems = redactedQueryItems(queryItems)
