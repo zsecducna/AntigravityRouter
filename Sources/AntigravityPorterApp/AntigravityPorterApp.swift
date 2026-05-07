@@ -57,6 +57,8 @@ struct AntigravityRouterApp: App {
     @State private var unsafeLogConfirmationPending = false
     @State private var quitConfirmationPending = false
     @State private var launchedAntigravityApp: NSRunningApplication?
+    @State private var logExportMessage = ""
+    @State private var logExportFailed = false
 
     init() {
         let settingsStore = UserDefaultsSettingsStore()
@@ -554,10 +556,19 @@ struct AntigravityRouterApp: App {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button("Export", systemImage: "square.and.arrow.up") {
+                    exportLogs()
+                }
+                .help("Export runtime and raw HTTP log files")
                 Button("Truncate", systemImage: "trash") {
                     runtime.truncateLogs()
                 }
                 .help("Clear displayed logs and truncate runtime/raw HTTP log files")
+            }
+            if !logExportMessage.isEmpty {
+                Text(logExportMessage)
+                    .font(.caption)
+                    .foregroundStyle(logExportFailed ? .red : .secondary)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -584,6 +595,22 @@ struct AntigravityRouterApp: App {
             return lines
         }
         return Array(lines.suffix(limit))
+    }
+
+    private func exportLogs() {
+        let panel = NSSavePanel()
+        panel.title = "Export Logs"
+        panel.nameFieldStringValue = "antigravityrouter-logs.txt"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try runtime.exportLogs(to: destination)
+            logExportMessage = "Exported logs to \(destination.lastPathComponent)"
+            logExportFailed = false
+        } catch {
+            logExportMessage = "Export failed: \(error.localizedDescription)"
+            logExportFailed = true
+        }
     }
 
     private var providerStatusLabel: String {

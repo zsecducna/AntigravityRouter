@@ -189,6 +189,16 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
         }
     }
 
+    func exportLogs(to destination: URL) throws {
+        try hardenLogDirectory()
+        let sections = logFiles.map { file in
+            let data = FileManager.default.contents(atPath: file.path) ?? Data()
+            let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+            return "===== \(file.lastPathComponent) =====\n\(text)"
+        }
+        try sections.joined(separator: "\n").write(to: destination, atomically: true, encoding: .utf8)
+    }
+
     private func handleListenerReady(port: Int) {
         appendRuntimeLog("listener ready \(activeProxyHost):\(port)")
         updateStatus { status in

@@ -21,6 +21,28 @@ final class SecurityPostureTests: XCTestCase {
         }
     }
 
+    func testLogExportWritesRuntimeAndRawHTTPSections() throws {
+        let directory = try temporaryDirectory()
+        let runtime = PorterRuntimeController(logDirectory: directory)
+        try "runtime line\n".write(to: directory.appendingPathComponent("runtime.log"), atomically: true, encoding: .utf8)
+        try "raw line\n".write(to: directory.appendingPathComponent("raw-http.log"), atomically: true, encoding: .utf8)
+        let destination = directory.appendingPathComponent("exported-logs.txt")
+
+        try runtime.exportLogs(to: destination)
+
+        let exported = try String(contentsOf: destination)
+        XCTAssertTrue(exported.contains("===== runtime.log =====\nruntime line"))
+        XCTAssertTrue(exported.contains("===== raw-http.log =====\nraw line"))
+    }
+
+    func testLogTabOffersExportAction() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"Button("Export", systemImage: "square.and.arrow.up")"#))
+        XCTAssertTrue(source.contains("NSSavePanel()"))
+        XCTAssertTrue(source.contains("runtime.exportLogs(to: destination)"))
+    }
+
     func testSourceKeepsAntigravityModelDiscoveryOutOfProviderRouting() throws {
         let root = packageRoot()
         let nwProxyServer = try String(contentsOf: root.appendingPathComponent("Sources/AntigravityPorterApp/NWProxyServer.swift"))
