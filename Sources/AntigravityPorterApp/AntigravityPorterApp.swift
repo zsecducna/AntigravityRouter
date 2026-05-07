@@ -601,11 +601,11 @@ struct AntigravityRouterApp: App {
 
     @discardableResult
     private func commitProviderBaseURL() -> Bool {
-        guard let url = URL(string: baseURLText), url.scheme == "https" else {
+        guard let url = URL(string: baseURLText), isSupportedProviderURLScheme(url.scheme) else {
             providerModelsCheckSucceeded = false
             providerModels = []
             modelsLoadFailed = true
-            modelsMessage = "Provider URL must be HTTPS"
+            modelsMessage = "Provider URL must use HTTP or HTTPS"
             return false
         }
         modelsLoadFailed = false
@@ -618,7 +618,7 @@ struct AntigravityRouterApp: App {
 
     @discardableResult
     private func commitProviderBaseURLIfValid() -> Bool {
-        guard let url = URL(string: baseURLText), url.scheme == "https" else {
+        guard let url = URL(string: baseURLText), isSupportedProviderURLScheme(url.scheme) else {
             return false
         }
         guard url != settings.cheapRouterBaseURL else {
@@ -629,6 +629,10 @@ struct AntigravityRouterApp: App {
         settings = updated
         runtime.refreshProviderReachability(settings: updated)
         return true
+    }
+
+    private func isSupportedProviderURLScheme(_ scheme: String?) -> Bool {
+        scheme == "http" || scheme == "https"
     }
 
     private func saveAPIKey() {

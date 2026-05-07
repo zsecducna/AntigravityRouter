@@ -188,6 +188,16 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("settings.cheapRouterBaseURL"))
     }
 
+    func testProviderURLValidationAllowsHTTPAndHTTPS() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains("isSupportedProviderURLScheme"))
+        XCTAssertTrue(source.contains(#"scheme == "http" || scheme == "https""#))
+        XCTAssertTrue(source.contains("Provider URL must use HTTP or HTTPS"))
+        XCTAssertFalse(source.contains(#"url.scheme == "https""#))
+        XCTAssertFalse(source.contains("Provider URL must be HTTPS"))
+    }
+
     func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
