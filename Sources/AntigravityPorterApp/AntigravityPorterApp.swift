@@ -286,54 +286,72 @@ struct AntigravityRouterApp: App {
                     statusRow("Last error", lastError)
                 }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Button("Check for Updates", systemImage: "arrow.down.circle") {
-                    updater.checkNow(forceOpen: true)
-                }
-                .help("Check GitHub releases now; automatic checks run every hour")
-                .disabled(updater.isChecking)
-                Text(updater.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Button(
-                    settings.customProviderRoutingEnabled ? "Disable Custom Provider Routing" : "Enable Custom Provider Routing",
-                    systemImage: settings.customProviderRoutingEnabled ? "xmark.circle" : "checkmark.circle"
-                ) {
-                    settings.customProviderRoutingEnabled.toggle()
-                }
-                .help(settings.customProviderRoutingEnabled ? "Forward all model requests to Google direct" : "Route all supported model requests to the custom provider")
-                if !transparentRoutingMessage.isEmpty {
-                    Text(transparentRoutingMessage)
+            if quitConfirmationPending {
+                quitConfirmation
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Check for Updates", systemImage: "arrow.down.circle") {
+                        updater.checkNow(forceOpen: true)
+                    }
+                    .help("Check GitHub releases now; automatic checks run every hour")
+                    .disabled(updater.isChecking)
+                    Text(updater.statusMessage)
                         .font(.caption)
-                        .foregroundStyle(transparentRoutingFailed ? .red : .secondary)
+                        .foregroundStyle(.secondary)
                 }
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                Button("Relaunch Antigravity", systemImage: "arrow.clockwise") {
-                    launchAntigravityViaPorter()
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(
+                        settings.customProviderRoutingEnabled ? "Disable Custom Provider Routing" : "Enable Custom Provider Routing",
+                        systemImage: settings.customProviderRoutingEnabled ? "xmark.circle" : "checkmark.circle"
+                    ) {
+                        settings.customProviderRoutingEnabled.toggle()
+                    }
+                    .help(settings.customProviderRoutingEnabled ? "Forward all model requests to Google direct" : "Route all supported model requests to the custom provider")
+                    if !transparentRoutingMessage.isEmpty {
+                        Text(transparentRoutingMessage)
+                            .font(.caption)
+                            .foregroundStyle(transparentRoutingFailed ? .red : .secondary)
+                    }
                 }
-                .help("Quit existing Antigravity and start its app binary with proxy env plus Electron proxy arguments")
-                if !launchMessage.isEmpty {
-                    Text(launchMessage)
-                        .font(.caption)
-                        .foregroundStyle(launchFailed ? .red : .secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Relaunch Antigravity", systemImage: "arrow.clockwise") {
+                        launchAntigravityViaPorter()
+                    }
+                    .help("Quit existing Antigravity and start its app binary with proxy env plus Electron proxy arguments")
+                    if !launchMessage.isEmpty {
+                        Text(launchMessage)
+                            .font(.caption)
+                            .foregroundStyle(launchFailed ? .red : .secondary)
+                    }
                 }
-            }
-            Spacer()
-            Button("Quit", systemImage: "power") {
-                quitConfirmationPending = true
+                Spacer()
+                Button("Quit", systemImage: "power") {
+                    quitConfirmationPending = true
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .alert("Quit AntigravityRouter?", isPresented: $quitConfirmationPending) {
-            Button("Quit and Relaunch Antigravity", role: .destructive) {
-                quitAndRelaunchAntigravityWithoutProxy()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
+    }
+
+    private var quitConfirmation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("Quit AntigravityRouter?")
+                .font(.headline)
             Text("Antigravity will relaunch without proxy settings. If relaunch succeeds, the local proxy will stop and AntigravityRouter will quit.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Quit and Relaunch Antigravity", systemImage: "power") {
+                    quitConfirmationPending = false
+                    quitAndRelaunchAntigravityWithoutProxy()
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Button("Cancel", systemImage: "xmark") {
+                    quitConfirmationPending = false
+                }
+            }
         }
     }
 

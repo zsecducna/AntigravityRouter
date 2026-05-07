@@ -158,8 +158,11 @@ final class SecurityPostureTests: XCTestCase {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
         XCTAssertTrue(source.contains("quitConfirmationPending = true"))
-        XCTAssertTrue(source.contains(#".alert("Quit AntigravityRouter?""#))
-        XCTAssertTrue(source.contains(#"Button("Quit and Relaunch Antigravity", role: .destructive)"#))
+        XCTAssertTrue(source.contains("private var quitConfirmation: some View"))
+        XCTAssertTrue(source.contains(#"Text("Quit AntigravityRouter?")"#))
+        XCTAssertTrue(source.contains(#"Button("Quit and Relaunch Antigravity", systemImage: "power")"#))
+        XCTAssertTrue(source.contains(#"Button("Cancel", systemImage: "xmark")"#))
+        XCTAssertFalse(source.contains(#".alert("Quit AntigravityRouter?""#))
         XCTAssertTrue(source.contains("quitAndRelaunchAntigravityWithoutProxy"))
         XCTAssertTrue(source.contains("environmentWithoutProxy"))
         XCTAssertTrue(source.contains(#""HTTP_PROXY""#))
