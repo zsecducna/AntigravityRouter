@@ -45,6 +45,7 @@ struct AntigravityRouterApp: App {
     @State private var apiKey: String
     @State private var certificateInstallMessage = ""
     @State private var certificateInstallFailed = false
+    @State private var certificateInstallSucceeded = false
     @State private var transparentRoutingMessage = ""
     @State private var transparentRoutingFailed = false
     @State private var launchMessage = ""
@@ -85,6 +86,12 @@ struct AntigravityRouterApp: App {
             }
             .onChange(of: settings.localProxyPort) { _, newValue in
                 proxyPortText = "\(newValue)"
+            }
+            .onChange(of: baseURLText) { _, _ in
+                invalidateProviderModelsCheck()
+            }
+            .onChange(of: apiKey) { _, _ in
+                invalidateProviderModelsCheck()
             }
         }
         .menuBarExtraStyle(.window)
@@ -234,11 +241,14 @@ struct AntigravityRouterApp: App {
                 Button("Start Setup", systemImage: "chevron.right") {
                     setupWizardStep = setupWizardStep.next
                 }
-            case .certificate, .provider:
+            case .certificate:
                 Button("Continue", systemImage: "chevron.right") {
-                    if setupWizardStep == .provider {
-                        guard saveProviderConfiguration() else { return }
-                    }
+                    setupWizardStep = setupWizardStep.next
+                }
+                .disabled(!certificateInstallSucceeded)
+            case .provider:
+                Button("Continue", systemImage: "chevron.right") {
+                    guard saveProviderConfiguration() else { return }
                     setupWizardStep = setupWizardStep.next
                 }
             case .check:
@@ -538,6 +548,8 @@ struct AntigravityRouterApp: App {
     @discardableResult
     private func commitProviderBaseURL() -> Bool {
         guard let url = URL(string: baseURLText), url.scheme == "https" else {
+            providerModelsCheckSucceeded = false
+            providerModels = []
             modelsLoadFailed = true
             modelsMessage = "Provider URL must be HTTPS"
             return false
@@ -558,6 +570,14 @@ struct AntigravityRouterApp: App {
             try? keychainStore.setString(trimmed, for: .cheapRouterAPIKey)
         }
         apiKey = trimmed
+    }
+
+    private func invalidateProviderModelsCheck() {
+        providerModelsCheckSucceeded = false
+        providerModels = []
+        guard !modelsLoading else { return }
+        modelsLoadFailed = false
+        modelsMessage = "Not checked"
     }
 
     @discardableResult
@@ -625,6 +645,13 @@ struct AntigravityRouterApp: App {
         guard saveProviderConfiguration() else { return }
         var updated = settings
         updated.customProviderRoutingEnabled = true
+        do {
+            try settingsStore.save(updated)
+        } catch {
+            launchFailed = true
+            launchMessage = "Settings save failed: \(error.localizedDescription)"
+            return
+        }
         settings = updated
         launchAntigravityViaPorter(completeSetupOnSuccess: true)
     }
@@ -831,23 +858,27 @@ struct AntigravityRouterApp: App {
         do {
             let certificateDER = try certificateAuthority.exportSigningIdentityDER()
             let certificateURL = try writeCertificateForTrustSetup(certificateDER)
+            certificateInstallSucceeded = false
             certificateInstallFailed = false
             certificateInstallMessage = "Requesting trust approval..."
             Task {
                 do {
                     try await CertificateTrustInstaller().installAndTrust(certificateURL: certificateURL)
                     await MainActor.run {
+                        certificateInstallSucceeded = true
                         certificateInstallFailed = false
                         certificateInstallMessage = "CA installed and trusted"
                     }
                 } catch {
                     await MainActor.run {
+                        certificateInstallSucceeded = false
                         certificateInstallFailed = true
                         certificateInstallMessage = "Install failed: \(error.localizedDescription)"
                     }
                 }
             }
         } catch {
+            certificateInstallSucceeded = false
             certificateInstallFailed = true
             certificateInstallMessage = "Install failed: \(error.localizedDescription)"
         }

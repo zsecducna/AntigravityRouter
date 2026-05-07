@@ -116,10 +116,42 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains(#"Button("Check API Key and Fetch Models", systemImage: "checkmark.seal")"#))
         XCTAssertTrue(source.contains(#"Button("Finish and Relaunch Antigravity", systemImage: "arrow.clockwise")"#))
         XCTAssertTrue(source.contains("providerModelsCheckSucceeded"))
+        XCTAssertTrue(source.contains("certificateInstallSucceeded"))
+        XCTAssertTrue(source.contains(".disabled(!certificateInstallSucceeded)"))
         XCTAssertTrue(source.contains("updated.customProviderRoutingEnabled = true"))
+        XCTAssertTrue(source.contains("try settingsStore.save(updated)"))
         XCTAssertTrue(source.contains("launchAntigravityViaPorter(completeSetupOnSuccess: true)"))
         XCTAssertTrue(source.contains("setupWizardCompleted = true"))
         XCTAssertTrue(source.contains(#"Button("Open Setup", systemImage: "list.bullet.clipboard")"#))
+    }
+
+    func testSetupFinishPersistsRoutingBeforeLaunch() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+        let finishRange = try XCTUnwrap(source.range(of: "private func finishSetupAndLaunchAntigravity()"))
+        let nextFunctionRange = try XCTUnwrap(source.range(of: "private func quitAndRelaunchAntigravityWithoutProxy()"))
+        let finishBody = String(source[finishRange.lowerBound..<nextFunctionRange.lowerBound])
+
+        XCTAssertTrue(finishBody.contains("updated.customProviderRoutingEnabled = true"))
+        let saveRange = try XCTUnwrap(finishBody.range(of: "try settingsStore.save(updated)"))
+        let assignRange = try XCTUnwrap(finishBody.range(of: "settings = updated"))
+        let launchRange = try XCTUnwrap(finishBody.range(of: "launchAntigravityViaPorter(completeSetupOnSuccess: true)"))
+        XCTAssertLessThan(saveRange.lowerBound, assignRange.lowerBound)
+        XCTAssertLessThan(assignRange.lowerBound, launchRange.lowerBound)
+    }
+
+    func testSetupWizardInvalidatesProviderCheckWhenInputsChange() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(".onChange(of: baseURLText)"))
+        XCTAssertTrue(source.contains(".onChange(of: apiKey)"))
+        XCTAssertTrue(source.contains("invalidateProviderModelsCheck()"))
+
+        let invalidateRange = try XCTUnwrap(source.range(of: "private func invalidateProviderModelsCheck()"))
+        let nextFunctionRange = try XCTUnwrap(source.range(of: "private func saveProviderConfiguration()"))
+        let invalidateBody = String(source[invalidateRange.lowerBound..<nextFunctionRange.lowerBound])
+        XCTAssertTrue(invalidateBody.contains("providerModelsCheckSucceeded = false"))
+        XCTAssertTrue(invalidateBody.contains("providerModels = []"))
+        XCTAssertTrue(invalidateBody.contains(#"modelsMessage = "Not checked""#))
     }
 
     func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {
