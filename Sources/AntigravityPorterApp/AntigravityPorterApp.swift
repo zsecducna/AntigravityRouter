@@ -25,6 +25,10 @@ final class PorterAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AntigravityRouterApp: App {
     private static let setupWizardCompletedKey = "AntigravityRouter.setupWizardCompleted.v1"
+    private static let mainWindowWidth: CGFloat = 560
+    private static let mainWindowHeight: CGFloat = 660
+    private static let setupWizardWindowWidth: CGFloat = 520
+    private static let setupWizardWindowHeight: CGFloat = 560
     private let settingsStore = UserDefaultsSettingsStore()
     private let keychainStore = SecurityKeychainStore()
     private let certificateAuthority: CertificateAuthority
@@ -80,7 +84,10 @@ struct AntigravityRouterApp: App {
                 }
             }
             .padding(12)
-            .frame(width: setupWizardCompleted ? 460 : 520, height: setupWizardCompleted ? 520 : 560)
+            .frame(
+                width: setupWizardCompleted ? Self.mainWindowWidth : Self.setupWizardWindowWidth,
+                height: setupWizardCompleted ? Self.mainWindowHeight : Self.setupWizardWindowHeight
+            )
             .onChange(of: settings) { _, newValue in
                 try? settingsStore.save(newValue)
             }
@@ -265,6 +272,13 @@ struct AntigravityRouterApp: App {
     }
 
     private var statusTab: some View {
+        ScrollView {
+            statusContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var statusContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle(PorterSettings.routingControlLabel, isOn: Binding(
                 get: { runtime.status.proxyEnabled },
@@ -791,6 +805,7 @@ struct AntigravityRouterApp: App {
 
     private func relaunchAntigravityWithoutProxy(bundleURL: URL) async throws {
         try terminateRunningAntigravity()
+        try AntigravityUserSettings.removeLocalProxyOverrides(proxyPort: settings.localProxyPort)
         _ = try await openAntigravity(
             bundleURL: bundleURL,
             arguments: [],

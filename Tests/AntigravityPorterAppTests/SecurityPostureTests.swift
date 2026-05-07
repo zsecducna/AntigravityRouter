@@ -91,6 +91,17 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains(#"statusRow("Mode", runtime.status.proxyEnabled ? "listening" : "off")"#))
     }
 
+    func testStatusTabFitsInMenuBarWindow() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains("private static let mainWindowWidth: CGFloat = 560"))
+        XCTAssertTrue(source.contains("private static let mainWindowHeight: CGFloat = 660"))
+        XCTAssertTrue(source.contains("width: setupWizardCompleted ? Self.mainWindowWidth : Self.setupWizardWindowWidth"))
+        XCTAssertTrue(source.contains("height: setupWizardCompleted ? Self.mainWindowHeight : Self.setupWizardWindowHeight"))
+        XCTAssertTrue(source.contains("ScrollView {"))
+        XCTAssertTrue(source.contains("statusContent"))
+    }
+
     func testSettingsTabAllowsTypedProxyPortInput() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
@@ -180,9 +191,62 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.OpenConfiguration()"))
         XCTAssertTrue(source.contains("configuration.arguments = arguments"))
         XCTAssertTrue(source.contains("private func openAntigravity("))
+        XCTAssertTrue(source.contains("try AntigravityUserSettings.removeLocalProxyOverrides(proxyPort: settings.localProxyPort)"))
         XCTAssertFalse(source.contains("try process.run()"))
         XCTAssertFalse(source.contains("forceTerminate()"))
         XCTAssertTrue(source.contains("Antigravity did not quit cleanly"))
+    }
+
+    func testDirectQuitRelaunchClearsPersistedLocalProxySettings() throws {
+        let directory = try temporaryDirectory()
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try Data(
+            #"""
+            {
+              "claudeCode.initialPermissionMode": "plan",
+              "jetski.cloudCodeUrl": "https://127.0.0.1:8877",
+              "http.proxy": "http://127.0.0.1:8877",
+              "http.noProxy": ["localhost", "127.0.0.1"]
+            }
+            """#.utf8
+        ).write(to: settingsURL)
+
+        let changed = try AntigravityUserSettings.removeLocalProxyOverrides(
+            settingsURL: settingsURL,
+            proxyPort: 8877
+        )
+
+        XCTAssertTrue(changed)
+        let data = try Data(contentsOf: settingsURL)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["jetski.cloudCodeUrl"])
+        XCTAssertNil(object["http.proxy"])
+        XCTAssertEqual(object["claudeCode.initialPermissionMode"] as? String, "plan")
+        XCTAssertNotNil(object["http.noProxy"])
+    }
+
+    func testDirectQuitRelaunchKeepsUnrelatedProxySettings() throws {
+        let directory = try temporaryDirectory()
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try Data(
+            #"""
+            {
+              "jetski.cloudCodeUrl": "https://cloudcode-pa.googleapis.com",
+              "http.proxy": "http://proxy.example:8080"
+            }
+            """#.utf8
+        ).write(to: settingsURL)
+
+        let changed = try AntigravityUserSettings.removeLocalProxyOverrides(
+            settingsURL: settingsURL,
+            proxyPort: 8877
+        )
+
+        XCTAssertFalse(changed)
+        let data = try Data(contentsOf: settingsURL)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["jetski.cloudCodeUrl"] as? String, "https://cloudcode-pa.googleapis.com")
+        XCTAssertEqual(object["http.proxy"] as? String, "http://proxy.example:8080")
     }
 
     func testProviderReachabilityIsProbedInsteadOfStayingUnchecked() throws {
@@ -218,5 +282,15 @@ final class SecurityPostureTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AntigravityRouterTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return directory
     }
 }
