@@ -100,6 +100,28 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains("min(max(port, 1024), 65535)"))
     }
 
+    func testFirstRunSetupWizardGuidesInstallAndLaunch() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"private static let setupWizardCompletedKey = "AntigravityRouter.setupWizardCompleted.v1""#))
+        XCTAssertTrue(source.contains("if setupWizardCompleted"))
+        XCTAssertTrue(source.contains("setupWizard"))
+        XCTAssertTrue(source.contains("SetupWizardStep.welcome"))
+        XCTAssertTrue(source.contains("case welcome"))
+        XCTAssertTrue(source.contains("case certificate"))
+        XCTAssertTrue(source.contains("case provider"))
+        XCTAssertTrue(source.contains("case check"))
+        XCTAssertTrue(source.contains("case finish"))
+        XCTAssertTrue(source.contains(#"Button("Install CA", systemImage: "key")"#))
+        XCTAssertTrue(source.contains(#"Button("Check API Key and Fetch Models", systemImage: "checkmark.seal")"#))
+        XCTAssertTrue(source.contains(#"Button("Finish and Relaunch Antigravity", systemImage: "arrow.clockwise")"#))
+        XCTAssertTrue(source.contains("providerModelsCheckSucceeded"))
+        XCTAssertTrue(source.contains("updated.customProviderRoutingEnabled = true"))
+        XCTAssertTrue(source.contains("launchAntigravityViaPorter(completeSetupOnSuccess: true)"))
+        XCTAssertTrue(source.contains("setupWizardCompleted = true"))
+        XCTAssertTrue(source.contains(#"Button("Open Setup", systemImage: "list.bullet.clipboard")"#))
+    }
+
     func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 

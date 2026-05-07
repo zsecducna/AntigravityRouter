@@ -24,18 +24,22 @@ final class PorterAppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct AntigravityRouterApp: App {
+    private static let setupWizardCompletedKey = "AntigravityRouter.setupWizardCompleted.v1"
     private let settingsStore = UserDefaultsSettingsStore()
     private let keychainStore = SecurityKeychainStore()
     private let certificateAuthority: CertificateAuthority
     @NSApplicationDelegateAdaptor(PorterAppDelegate.self) private var appDelegate
+    @AppStorage(Self.setupWizardCompletedKey) private var setupWizardCompleted = false
     @StateObject private var runtime = PorterRuntimeRegistry.shared
     @StateObject private var updater = AppUpdateRegistry.shared
     @State private var settings: PorterSettings
     @State private var selectedTab = PorterTab.status
+    @State private var setupWizardStep = SetupWizardStep.welcome
     @State private var providerModels: [ProviderModel] = []
     @State private var modelsMessage = "Not loaded"
     @State private var modelsLoadFailed = false
     @State private var modelsLoading = false
+    @State private var providerModelsCheckSucceeded = false
     @State private var baseURLText: String
     @State private var proxyPortText: String
     @State private var apiKey: String
@@ -57,28 +61,25 @@ struct AntigravityRouterApp: App {
         _baseURLText = State(initialValue: loaded.cheapRouterBaseURL.absoluteString)
         _proxyPortText = State(initialValue: "\(loaded.localProxyPort)")
         let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
+        if UserDefaults.standard.object(forKey: Self.setupWizardCompletedKey) == nil,
+           !savedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserDefaults.standard.set(true, forKey: Self.setupWizardCompletedKey)
+        }
         _apiKey = State(initialValue: savedAPIKey)
         PorterRuntimeRegistry.shared.start(settings: loaded)
     }
 
     var body: some Scene {
         MenuBarExtra("AntigravityRouter", systemImage: "point.3.connected.trianglepath.dotted") {
-            TabView(selection: $selectedTab) {
-                statusTab
-                    .tabItem { Label("Status", systemImage: "circle.grid.cross") }
-                    .tag(PorterTab.status)
-                modelsTab
-                    .tabItem { Label("Models", systemImage: "switch.2") }
-                    .tag(PorterTab.models)
-                settingsTab
-                    .tabItem { Label("Settings", systemImage: "gearshape") }
-                    .tag(PorterTab.settings)
-                logTab
-                    .tabItem { Label("Log", systemImage: "list.bullet.rectangle") }
-                    .tag(PorterTab.log)
+            Group {
+                if setupWizardCompleted {
+                    mainTabs
+                } else {
+                    setupWizard
+                }
             }
             .padding(12)
-            .frame(width: 460, height: 520)
+            .frame(width: setupWizardCompleted ? 460 : 520, height: setupWizardCompleted ? 520 : 560)
             .onChange(of: settings) { _, newValue in
                 try? settingsStore.save(newValue)
             }
@@ -87,6 +88,170 @@ struct AntigravityRouterApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+    }
+
+    private var mainTabs: some View {
+        TabView(selection: $selectedTab) {
+            statusTab
+                .tabItem { Label("Status", systemImage: "circle.grid.cross") }
+                .tag(PorterTab.status)
+            modelsTab
+                .tabItem { Label("Models", systemImage: "switch.2") }
+                .tag(PorterTab.models)
+            settingsTab
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(PorterTab.settings)
+            logTab
+                .tabItem { Label("Log", systemImage: "list.bullet.rectangle") }
+                .tag(PorterTab.log)
+        }
+    }
+
+    private var setupWizard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(setupWizardStep.title)
+                        .font(.title3.weight(.semibold))
+                    Text("Step \(setupWizardStep.index + 1) of \(SetupWizardStep.steps.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Skip", systemImage: "xmark.circle") {
+                    setupWizardCompleted = true
+                }
+                .buttonStyle(.borderless)
+                .help("Skip setup and open the main controls")
+            }
+
+            ProgressView(value: Double(setupWizardStep.index + 1), total: Double(SetupWizardStep.steps.count))
+
+            setupWizardStepContent
+
+            Spacer()
+
+            HStack {
+                if setupWizardStep != .welcome {
+                    Button("Back", systemImage: "chevron.left") {
+                        setupWizardStep = setupWizardStep.previous
+                    }
+                }
+                Spacer()
+                setupWizardPrimaryButton
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var setupWizardStepContent: some View {
+        switch setupWizardStep {
+        case .welcome:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("AntigravityRouter prepares Antigravity to use a custom provider for supported model requests.")
+                Text("Model discovery stays Google-direct. Only supported inference requests are translated and routed when custom provider routing is enabled.")
+                    .foregroundStyle(.secondary)
+                Text("The setup checks the local CA, provider credentials, model list, and then relaunches Antigravity with the proxy environment.")
+                    .foregroundStyle(.secondary)
+            }
+        case .certificate:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Generate and install the local CA certificate so Antigravity can trust the router's MITM TLS certificates.")
+                Button("Install CA", systemImage: "key") {
+                    installCertificate()
+                }
+                .help("Install and trust the CA certificate for this user")
+                if !certificateInstallMessage.isEmpty {
+                    Text(certificateInstallMessage)
+                        .font(.caption)
+                        .foregroundStyle(certificateInstallFailed ? .red : .secondary)
+                }
+            }
+        case .provider:
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    Text("Provider URL")
+                    TextField("https://cheaprouter.uk", text: $baseURLText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            _ = commitProviderBaseURL()
+                        }
+                }
+                GridRow {
+                    Text("API key")
+                    SecureField("Bearer token", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(saveAPIKey)
+                }
+            }
+            Text("Your API key is stored in the macOS Keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .check:
+            VStack(alignment: .leading, spacing: 10) {
+                Button("Check API Key and Fetch Models", systemImage: "checkmark.seal") {
+                    checkProviderConfiguration()
+                }
+                .disabled(modelsLoading)
+                Text(modelsMessage)
+                    .font(.caption)
+                    .foregroundStyle(modelsLoadFailed ? .red : .secondary)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(providerModels.prefix(12)) { model in
+                            Text(model.id)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                        if providerModels.count > 12 {
+                            Text("+ \(providerModels.count - 12) more")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        case .finish:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Setup is ready.")
+                Text("Finishing enables custom provider routing, starts the local MITM listener, and relaunches Antigravity with the router proxy environment.")
+                    .foregroundStyle(.secondary)
+                if !launchMessage.isEmpty {
+                    Text(launchMessage)
+                        .font(.caption)
+                        .foregroundStyle(launchFailed ? .red : .secondary)
+                }
+            }
+        }
+    }
+
+    private var setupWizardPrimaryButton: some View {
+        Group {
+            switch setupWizardStep {
+            case .welcome:
+                Button("Start Setup", systemImage: "chevron.right") {
+                    setupWizardStep = setupWizardStep.next
+                }
+            case .certificate, .provider:
+                Button("Continue", systemImage: "chevron.right") {
+                    if setupWizardStep == .provider {
+                        guard saveProviderConfiguration() else { return }
+                    }
+                    setupWizardStep = setupWizardStep.next
+                }
+            case .check:
+                Button("Continue", systemImage: "chevron.right") {
+                    setupWizardStep = setupWizardStep.next
+                }
+                .disabled(!providerModelsCheckSucceeded)
+            case .finish:
+                Button("Finish and Relaunch Antigravity", systemImage: "arrow.clockwise") {
+                    finishSetupAndLaunchAntigravity()
+                }
+            }
+        }
     }
 
     private var statusTab: some View {
@@ -213,16 +378,11 @@ struct AntigravityRouterApp: App {
     private var settingsTab: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
             GridRow {
-                Text("cheaprouter.uk")
-                TextField("Base URL", text: $baseURLText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        if let url = URL(string: baseURLText), url.scheme == "https" {
-                            var updated = settings
-                            updated.cheapRouterBaseURL = url
-                            settings = updated
-                            runtime.refreshProviderReachability(settings: updated)
-                        }
+                    Text("cheaprouter.uk")
+                    TextField("Base URL", text: $baseURLText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            _ = commitProviderBaseURL()
                     }
             }
             GridRow {
@@ -258,6 +418,14 @@ struct AntigravityRouterApp: App {
                 Text("Launch at login")
                 Toggle("", isOn: $settings.launchAtLoginEnabled)
                     .toggleStyle(.switch)
+            }
+            GridRow {
+                Text("Setup wizard")
+                Button("Open Setup", systemImage: "list.bullet.clipboard") {
+                    setupWizardStep = .welcome
+                    setupWizardCompleted = false
+                }
+                .help("Run the guided setup again")
             }
             GridRow {
                 Text("Raw HTTP log")
@@ -367,6 +535,21 @@ struct AntigravityRouterApp: App {
         }
     }
 
+    @discardableResult
+    private func commitProviderBaseURL() -> Bool {
+        guard let url = URL(string: baseURLText), url.scheme == "https" else {
+            modelsLoadFailed = true
+            modelsMessage = "Provider URL must be HTTPS"
+            return false
+        }
+        modelsLoadFailed = false
+        var updated = settings
+        updated.cheapRouterBaseURL = url
+        settings = updated
+        runtime.refreshProviderReachability(settings: updated)
+        return true
+    }
+
     private func saveAPIKey() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -375,6 +558,18 @@ struct AntigravityRouterApp: App {
             try? keychainStore.setString(trimmed, for: .cheapRouterAPIKey)
         }
         apiKey = trimmed
+    }
+
+    @discardableResult
+    private func saveProviderConfiguration() -> Bool {
+        guard commitProviderBaseURL() else { return false }
+        saveAPIKey()
+        return true
+    }
+
+    private func checkProviderConfiguration() {
+        guard saveProviderConfiguration() else { return }
+        refreshProviderModels()
     }
 
     private func normalizeProxyPortText(_ value: String) {
@@ -399,7 +594,7 @@ struct AntigravityRouterApp: App {
         proxyPortText = "\(normalized)"
     }
 
-    private func launchAntigravityViaPorter() {
+    private func launchAntigravityViaPorter(completeSetupOnSuccess: Bool = false) {
         launchFailed = false
         launchMessage = "Starting local proxy listener..."
         runtime.waitUntilReady(settings: settings, timeout: 5) { result in
@@ -410,6 +605,10 @@ struct AntigravityRouterApp: App {
                         launchedAntigravityProcess = try launchAntigravity()
                         launchFailed = false
                         launchMessage = "Relaunched with proxy env + Electron proxy"
+                        if completeSetupOnSuccess {
+                            setupWizardCompleted = true
+                            setupWizardStep = .welcome
+                        }
                     } catch {
                         launchFailed = true
                         launchMessage = "Launch failed: \(error.localizedDescription)"
@@ -420,6 +619,14 @@ struct AntigravityRouterApp: App {
                 }
             }
         }
+    }
+
+    private func finishSetupAndLaunchAntigravity() {
+        guard saveProviderConfiguration() else { return }
+        var updated = settings
+        updated.customProviderRoutingEnabled = true
+        settings = updated
+        launchAntigravityViaPorter(completeSetupOnSuccess: true)
     }
 
     private func quitAndRelaunchAntigravityWithoutProxy() {
@@ -589,6 +796,7 @@ struct AntigravityRouterApp: App {
     private func refreshProviderModels() {
         modelsLoading = true
         modelsLoadFailed = false
+        providerModelsCheckSucceeded = false
         modelsMessage = "Loading..."
         let settings = settings
         Task {
@@ -604,6 +812,7 @@ struct AntigravityRouterApp: App {
                     providerModels = models
                     modelsMessage = "\(models.count) models from target provider"
                     modelsLoadFailed = false
+                    providerModelsCheckSucceeded = true
                     modelsLoading = false
                 }
             } catch {
@@ -611,6 +820,7 @@ struct AntigravityRouterApp: App {
                     providerModels = []
                     modelsMessage = "Model fetch failed: \(error.localizedDescription)"
                     modelsLoadFailed = true
+                    providerModelsCheckSucceeded = false
                     modelsLoading = false
                 }
             }
@@ -746,6 +956,43 @@ enum ProviderReachabilityState: Equatable, Sendable {
             "reachable"
         case .unreachable:
             "unreachable"
+        }
+    }
+}
+
+private enum SetupWizardStep: Int, CaseIterable, Hashable {
+    case welcome
+    case certificate
+    case provider
+    case check
+    case finish
+
+    static let steps: [SetupWizardStep] = Array(allCases)
+
+    var index: Int {
+        Self.steps.firstIndex(of: self) ?? 0
+    }
+
+    var previous: SetupWizardStep {
+        Self.steps[max(0, index - 1)]
+    }
+
+    var next: SetupWizardStep {
+        Self.steps[min(Self.steps.count - 1, index + 1)]
+    }
+
+    var title: String {
+        switch self {
+        case .welcome:
+            "Welcome"
+        case .certificate:
+            "Generate and Install Certs"
+        case .provider:
+            "Configure Custom Provider"
+        case .check:
+            "Check API Key and Models"
+        case .finish:
+            "Finish"
         }
     }
 }

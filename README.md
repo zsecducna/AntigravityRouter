@@ -160,12 +160,15 @@ sequenceDiagram
 
 ## Setup
 
-1. Install and open `AntigravityRouter`.
-2. In Settings, enter the target provider base URL and API key.
-3. Click `Install CA` and approve trust installation for `AntigravityRouter Local CA`.
-4. Keep `Local proxy listener` enabled.
-5. Click `Relaunch Antigravity`.
-6. Use `Enable Custom Provider Routing` only when you want supported generation requests to be translated and sent to the configured provider.
+On first launch, AntigravityRouter opens a guided setup wizard:
+
+1. Welcome and routing overview.
+2. Generate and install the local CA certificate.
+3. Configure the target provider base URL and API key.
+4. Check the API key by fetching the provider model list.
+5. Finish by enabling custom provider routing and relaunching Antigravity through AntigravityRouter.
+
+The wizard can be reopened from Settings with `Open Setup`.
 
 When custom provider routing is disabled, AntigravityRouter still allows the local proxy flow, but supported model requests are forwarded to Google's CloudCode endpoint instead of the target provider.
 
