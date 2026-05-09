@@ -53,14 +53,14 @@ final class KeychainStoreTests: XCTestCase {
 
     func testMigratingKeychainStoreCopiesFallbackSecretToPrimaryAndDeletesFallback() throws {
         let primary = InMemoryKeychainStore()
-        let fallback = InMemoryKeychainStore(storage: [.certificateAuthorityPrivateKey: Data("legacy-key".utf8)])
+        let fallback = InMemoryKeychainStore(storage: [.cheapRouterAPIKey: Data("legacy-key".utf8)])
         let store = MigratingKeychainStore(primary: primary, fallback: fallback)
 
-        let migrated = try store.data(for: .certificateAuthorityPrivateKey)
+        let migrated = try store.data(for: .cheapRouterAPIKey)
 
         XCTAssertEqual(migrated, Data("legacy-key".utf8))
-        XCTAssertEqual(try primary.data(for: .certificateAuthorityPrivateKey), Data("legacy-key".utf8))
-        XCTAssertNil(try fallback.data(for: .certificateAuthorityPrivateKey))
+        XCTAssertEqual(try primary.data(for: .cheapRouterAPIKey), Data("legacy-key".utf8))
+        XCTAssertNil(try fallback.data(for: .cheapRouterAPIKey))
     }
 
     func testMigratingKeychainStoreDeletesPrimaryAndFallbackSecrets() throws {

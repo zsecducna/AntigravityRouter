@@ -8,6 +8,11 @@ import Security
 #endif
 
 final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
+    private static let currentKeychainService = "uk.cheaprouter.AntigravityRouter"
+    private static let legacyKeychainService = "uk.cheaprouter.AntigravityPorter"
+    private static let currentCAKeychainService = "uk.cheaprouter.AntigravityRouter.ca"
+    private static let legacyCAKeychainService = "uk.cheaprouter.AntigravityPorter.ca"
+
     @Published private(set) var status = PorterAppStatus()
 
     private static let maximumRecentLogEntries = 1000
@@ -20,7 +25,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     private var providerReachabilityGeneration = 0
     private let providerReachabilityLock = NSLock()
     private let settingsStore = UserDefaultsSettingsStore()
-    private let keychainStore = SecurityKeychainStore()
+    private let keychainStore: any KeychainStoring = PorterRuntimeController.appSecretsStore()
     private let certificateStore: any KeychainStoring
     private let logDirectory: URL
     private lazy var certificateAuthority = CertificateAuthority(keychain: certificateStore)
@@ -357,7 +362,17 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     private static func certificateAuthorityStore() -> any KeychainStoring {
         MigratingKeychainStore(
             primary: FileKeychainStore(directory: certificateAuthorityDirectory()),
-            fallback: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityRouter.ca")
+            fallback: MigratingKeychainStore(
+                primary: SecurityKeychainStore(service: currentCAKeychainService),
+                fallback: SecurityKeychainStore(service: legacyCAKeychainService)
+            )
+        )
+    }
+
+    private static func appSecretsStore() -> any KeychainStoring {
+        MigratingKeychainStore(
+            primary: SecurityKeychainStore(service: currentKeychainService),
+            fallback: SecurityKeychainStore(service: legacyKeychainService)
         )
     }
 

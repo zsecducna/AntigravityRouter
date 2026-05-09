@@ -122,29 +122,54 @@ extension UserDefaults: SettingsDataStoring {
 }
 
 public final class UserDefaultsSettingsStore {
+    public static let defaultSettingsKey = "AntigravityRouter.settings.v1"
+    public static let legacySettingsKey = "AntigravityPorter.settings.v1"
+
     private let userDefaults: any SettingsDataStoring
     private let key: String
+    private let legacyKey: String?
 
-    public init(userDefaults: any SettingsDataStoring = UserDefaults.standard, key: String = "AntigravityRouter.settings.v1") {
+    public init(
+        userDefaults: any SettingsDataStoring = UserDefaults.standard,
+        key: String = UserDefaultsSettingsStore.defaultSettingsKey,
+        legacyKey: String? = UserDefaultsSettingsStore.legacySettingsKey
+    ) {
         self.userDefaults = userDefaults
         self.key = key
+        self.legacyKey = legacyKey
     }
 
     public func load() -> PorterSettings {
-        guard let data = userDefaults.settingsData(forKey: key),
-              let settings = try? JSONDecoder().decode(PorterSettings.self, from: data)
-        else {
-            return .defaults
+        if let settings = loadSettings(forKey: key) {
+            return settings
         }
-        return settings
+        if let legacyKey, let settings = loadSettings(forKey: legacyKey) {
+            try? save(settings)
+            userDefaults.removeObject(forKey: legacyKey)
+            return settings
+        }
+        return .defaults
     }
 
     public func save(_ settings: PorterSettings) throws {
         let data = try JSONEncoder().encode(settings)
         userDefaults.setSettingsData(data, forKey: key)
+        if let legacyKey {
+            userDefaults.removeObject(forKey: legacyKey)
+        }
     }
 
     public func reset() {
         userDefaults.removeObject(forKey: key)
+        if let legacyKey {
+            userDefaults.removeObject(forKey: legacyKey)
+        }
+    }
+
+    private func loadSettings(forKey key: String) -> PorterSettings? {
+        guard let data = userDefaults.settingsData(forKey: key) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(PorterSettings.self, from: data)
     }
 }

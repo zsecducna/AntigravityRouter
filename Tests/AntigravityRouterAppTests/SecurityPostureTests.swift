@@ -74,8 +74,10 @@ final class SecurityPostureTests: XCTestCase {
 
         XCTAssertTrue(appSource.contains("FileKeychainStore(directory: certificateAuthorityDirectory())"))
         XCTAssertTrue(runtimeSource.contains("FileKeychainStore(directory: certificateAuthorityDirectory())"))
-        XCTAssertTrue(appSource.contains("fallback: SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityRouter.ca\")"))
-        XCTAssertTrue(runtimeSource.contains("fallback: SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityRouter.ca\")"))
+        XCTAssertTrue(appSource.contains("legacyKeychainService = \"uk.cheaprouter.AntigravityPorter\""))
+        XCTAssertTrue(appSource.contains("legacyCAKeychainService = \"uk.cheaprouter.AntigravityPorter.ca\""))
+        XCTAssertTrue(runtimeSource.contains("legacyKeychainService = \"uk.cheaprouter.AntigravityPorter\""))
+        XCTAssertTrue(runtimeSource.contains("legacyCAKeychainService = \"uk.cheaprouter.AntigravityPorter.ca\""))
         XCTAssertTrue(appSource.contains("MigratingKeychainStore"))
         XCTAssertTrue(runtimeSource.contains("MigratingKeychainStore"))
     }

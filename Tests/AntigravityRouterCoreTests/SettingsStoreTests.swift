@@ -53,6 +53,49 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(loaded.providerModelAliases, ["MODEL_PLACEHOLDER_M120": "gpt-5.5"])
     }
 
+    func testStoreMigratesLegacyAntigravityPorterSettingsToRouterKey() throws {
+        let legacy = PorterSettings(
+            cheapRouterBaseURL: URL(string: "https://router.example")!,
+            localProxyHost: "127.0.0.1",
+            localProxyPort: 9977,
+            launchAtLoginEnabled: true,
+            customProviderRoutingEnabled: true,
+            rawHTTPLoggingEnabled: false,
+            unsafeFullRawHTTPLoggingEnabled: false,
+            logTailLineLimit: 80,
+            providerModelAliases: ["MODEL_PLACEHOLDER_M120": "gpt-5.5"]
+        )
+        let storage = InMemorySettingsDataStore(storage: [
+            "AntigravityPorter.settings.v1": try JSONEncoder().encode(legacy)
+        ])
+        let store = UserDefaultsSettingsStore(
+            userDefaults: storage,
+            key: "AntigravityRouter.settings.v1",
+            legacyKey: "AntigravityPorter.settings.v1"
+        )
+
+        let loaded = store.load()
+
+        XCTAssertEqual(loaded, legacy)
+        XCTAssertNotNil(storage.settingsData(forKey: "AntigravityRouter.settings.v1"))
+        XCTAssertNil(storage.settingsData(forKey: "AntigravityPorter.settings.v1"))
+    }
+
+    func testStoreSaveAndResetRemoveLegacySettingsKey() throws {
+        let legacyData = try JSONEncoder().encode(PorterSettings.defaults)
+        let storage = InMemorySettingsDataStore(storage: ["old": legacyData])
+        let store = UserDefaultsSettingsStore(userDefaults: storage, key: "new", legacyKey: "old")
+
+        try store.save(PorterSettings.defaults)
+        XCTAssertNotNil(storage.settingsData(forKey: "new"))
+        XCTAssertNil(storage.settingsData(forKey: "old"))
+
+        storage.setSettingsData(legacyData, forKey: "old")
+        store.reset()
+        XCTAssertNil(storage.settingsData(forKey: "new"))
+        XCTAssertNil(storage.settingsData(forKey: "old"))
+    }
+
     func testLegacyRoutedModelsEnableCustomProviderRouting() throws {
         let storage = InMemorySettingsDataStore(storage: [
             "settings": Data(

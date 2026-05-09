@@ -25,12 +25,16 @@ final class PorterAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AntigravityRouterApp: App {
     private static let setupWizardCompletedKey = "AntigravityRouter.setupWizardCompleted.v1"
+    private static let currentKeychainService = "uk.cheaprouter.AntigravityRouter"
+    private static let legacyKeychainService = "uk.cheaprouter.AntigravityPorter"
+    private static let currentCAKeychainService = "uk.cheaprouter.AntigravityRouter.ca"
+    private static let legacyCAKeychainService = "uk.cheaprouter.AntigravityPorter.ca"
     private static let mainWindowWidth: CGFloat = 560
     private static let mainWindowHeight: CGFloat = 660
     private static let setupWizardWindowWidth: CGFloat = 520
     private static let setupWizardWindowHeight: CGFloat = 560
     private let settingsStore = UserDefaultsSettingsStore()
-    private let keychainStore = SecurityKeychainStore()
+    private let keychainStore = Self.appSecretsStore()
     private let certificateAuthority: CertificateAuthority
     @NSApplicationDelegateAdaptor(PorterAppDelegate.self) private var appDelegate
     @AppStorage(Self.setupWizardCompletedKey) private var setupWizardCompleted = false
@@ -1067,7 +1071,17 @@ struct AntigravityRouterApp: App {
     private static func certificateAuthorityStore() -> any KeychainStoring {
         MigratingKeychainStore(
             primary: FileKeychainStore(directory: certificateAuthorityDirectory()),
-            fallback: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityRouter.ca")
+            fallback: MigratingKeychainStore(
+                primary: SecurityKeychainStore(service: currentCAKeychainService),
+                fallback: SecurityKeychainStore(service: legacyCAKeychainService)
+            )
+        )
+    }
+
+    private static func appSecretsStore() -> any KeychainStoring {
+        MigratingKeychainStore(
+            primary: SecurityKeychainStore(service: currentKeychainService),
+            fallback: SecurityKeychainStore(service: legacyKeychainService)
         )
     }
 
