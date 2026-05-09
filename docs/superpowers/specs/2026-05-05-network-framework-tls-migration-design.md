@@ -122,8 +122,8 @@ PorterRuntimeController
 
 | File | Change |
 |---|---|
-| `Sources/AntigravityPorterApp/PorterRuntimeController.swift` | Replace `SocketProxyServer` class with `NWProxyServer` actor + `TLSTerminationServer` actor + `ProxyConnectionHandler` actor |
-| `Tests/AntigravityPorterCoreTests/ProxyCoreTests.swift` | Add integration test for ALPN via `NWProxyServer` |
+| `Sources/AntigravityRouterApp/PorterRuntimeController.swift` | Replace `SocketProxyServer` class with `NWProxyServer` actor + `TLSTerminationServer` actor + `ProxyConnectionHandler` actor |
+| `Tests/AntigravityRouterCoreTests/ProxyCoreTests.swift` | Add integration test for ALPN via `NWProxyServer` |
 
 **No changes to `Package.swift`** — Network.framework auto-linked on macOS.
 

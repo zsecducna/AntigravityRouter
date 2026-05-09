@@ -9,37 +9,37 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "AntigravityPorterCore",
-            targets: ["AntigravityPorterCore"]
+            name: "AntigravityRouterCore",
+            targets: ["AntigravityRouterCore"]
         ),
         .executable(
             name: "AntigravityRouter",
-            targets: ["AntigravityPorterApp"]
+            targets: ["AntigravityRouterApp"]
         ),
         .executable(
-            name: "AntigravityPorterMonitor",
-            targets: ["AntigravityPorterMonitor"]
+            name: "AntigravityRouterMonitor",
+            targets: ["AntigravityRouterMonitor"]
         )
     ],
     targets: [
         .target(
-            name: "AntigravityPorterCore"
+            name: "AntigravityRouterCore"
         ),
         .executableTarget(
-            name: "AntigravityPorterApp",
-            dependencies: ["AntigravityPorterCore"]
+            name: "AntigravityRouterApp",
+            dependencies: ["AntigravityRouterCore"]
         ),
         .executableTarget(
-            name: "AntigravityPorterMonitor",
-            dependencies: ["AntigravityPorterCore"]
+            name: "AntigravityRouterMonitor",
+            dependencies: ["AntigravityRouterCore"]
         ),
         .testTarget(
-            name: "AntigravityPorterCoreTests",
-            dependencies: ["AntigravityPorterCore"]
+            name: "AntigravityRouterCoreTests",
+            dependencies: ["AntigravityRouterCore"]
         ),
         .testTarget(
-            name: "AntigravityPorterAppTests",
-            dependencies: ["AntigravityPorterApp"]
+            name: "AntigravityRouterAppTests",
+            dependencies: ["AntigravityRouterApp"]
         )
     ]
 )

@@ -176,7 +176,7 @@ Do not enable unsafe full-body logging unless you need exact request and respons
 ```bash
 swift test
 swift build -c release --product AntigravityRouter
-swift build -c release --product AntigravityPorterMonitor
+swift build -c release --product AntigravityRouterMonitor
 ```
 
 The package requires macOS 14 or newer and Swift 6.
