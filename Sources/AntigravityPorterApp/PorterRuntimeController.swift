@@ -82,6 +82,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
         }
 
         do {
+            try prepareRuntimeCertificateBundle()
             let server = NWProxyServer(
                 host: settings.localProxyHost,
                 port: settings.localProxyPort,
@@ -197,6 +198,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
             return "===== \(file.lastPathComponent) =====\n\(text)"
         }
         try sections.joined(separator: "\n").write(to: destination, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
     }
 
     private func handleListenerReady(port: Int) {
@@ -354,14 +356,28 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
 
     private static func certificateAuthorityStore() -> any KeychainStoring {
         MigratingKeychainStore(
-            primary: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca"),
-            fallback: FileKeychainStore(directory: legacyCertificateAuthorityDirectory())
+            primary: FileKeychainStore(directory: certificateAuthorityDirectory()),
+            fallback: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca")
         )
     }
 
-    private static func legacyCertificateAuthorityDirectory() -> URL {
+    private static func certificateAuthorityDirectory() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
+    }
+
+    private func prepareRuntimeCertificateBundle() throws {
+        let caDER = try certificateAuthority.exportSigningIdentityDER()
+        let appDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AntigravityPorter", isDirectory: true)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appDirectory.path)
+
+        let certificateURL = appDirectory.appendingPathComponent("AntigravityRouter Local CA.pem")
+        let base64 = caDER.base64EncodedString(options: [.lineLength64Characters])
+        let pem = "-----BEGIN CERTIFICATE-----\n\(base64)\n-----END CERTIFICATE-----\n"
+        try Data(pem.utf8).write(to: certificateURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: certificateURL.path)
     }
 }
 

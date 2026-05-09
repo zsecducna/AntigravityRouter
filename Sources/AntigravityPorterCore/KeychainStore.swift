@@ -2,6 +2,9 @@ import Foundation
 #if canImport(Security)
 import Security
 #endif
+#if canImport(LocalAuthentication)
+import LocalAuthentication
+#endif
 
 public enum KeychainSecretKey: String, CaseIterable, CustomStringConvertible, Sendable {
     case cheapRouterAPIKey
@@ -123,6 +126,13 @@ public struct SecurityKeychainStore: KeychainStoring, Sendable {
         var query = baseQuery(for: key)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        #if canImport(LocalAuthentication)
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+        #else
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        #endif
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

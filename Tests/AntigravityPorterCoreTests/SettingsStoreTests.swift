@@ -12,6 +12,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(settings.rawHTTPLoggingEnabled)
         XCTAssertFalse(settings.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(settings.logTailLineLimit, 200)
+        XCTAssertEqual(settings.providerModelAliases, [:])
     }
 
     func testRoutingLabelsDescribeAppEnvRouting() {
@@ -35,7 +36,8 @@ final class SettingsStoreTests: XCTestCase {
             customProviderRoutingEnabled: true,
             rawHTTPLoggingEnabled: false,
             unsafeFullRawHTTPLoggingEnabled: true,
-            logTailLineLimit: 50
+            logTailLineLimit: 50,
+            providerModelAliases: ["MODEL_PLACEHOLDER_M120": "gpt-5.5"]
         )
 
         try store.save(custom)
@@ -48,6 +50,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(loaded.rawHTTPLoggingEnabled)
         XCTAssertTrue(loaded.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(loaded.logTailLineLimit, 50)
+        XCTAssertEqual(loaded.providerModelAliases, ["MODEL_PLACEHOLDER_M120": "gpt-5.5"])
     }
 
     func testLegacyRoutedModelsEnableCustomProviderRouting() throws {

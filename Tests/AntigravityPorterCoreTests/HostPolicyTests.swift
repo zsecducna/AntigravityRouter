@@ -52,7 +52,7 @@ final class HostPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             policy.decision(for: "cloudcode-pa.googleapis.com", port: 443, path: "/v1internal:fetchAvailableModels"),
-            .blindTunnel
+            .intercept
         )
         XCTAssertEqual(
             policy.decision(for: "sandbox-cloudcode-pa.googleapis.com", port: 443, path: "/v1internal:countTokens"),

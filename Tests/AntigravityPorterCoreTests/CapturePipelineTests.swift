@@ -81,7 +81,7 @@ final class CapturePipelineTests: XCTestCase {
             timing: .init(startedAt: Date(timeIntervalSince1970: 5), durationMS: 20)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["gpt-5.5": "gpt-5.5"]))
         ))
 
         let result = harness.replay(capture)
@@ -91,10 +91,10 @@ final class CapturePipelineTests: XCTestCase {
         }
         XCTAssertEqual(result.captureID, "antigravity-stream")
         XCTAssertEqual(metadata.model, "gpt-5.5")
-        XCTAssertEqual(payload.endpoint, .chatCompletions)
+        XCTAssertEqual(payload.endpoint, .responses)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
         XCTAssertEqual(json["model"] as? String, "gpt-5.5")
-        XCTAssertEqual(json["max_tokens"] as? Int, 128)
+        XCTAssertEqual(json["max_output_tokens"] as? Int, 128)
     }
 
     func testReplayHarnessKeepsUnsupportedRoutedFixtureFailClosed() {
@@ -110,7 +110,7 @@ final class CapturePipelineTests: XCTestCase {
             timing: .init(startedAt: Date(timeIntervalSince1970: 6), durationMS: 22)
         )
         let harness = ReplayHarness(planner: ProxyRequestPlanner(
-            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true))
+            routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["gpt-5.5": "gpt-5.5"]))
         ))
 
         let result = harness.replay(capture)

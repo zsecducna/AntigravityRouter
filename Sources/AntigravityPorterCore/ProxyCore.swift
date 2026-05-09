@@ -19,7 +19,8 @@ public struct HostPolicy: Equatable, Sendable {
         guard let path else { return .blindTunnel }
         if Self.antigravityInferenceHosts.contains(normalizedHost) {
             return path.contains(":generateContent")
-                || path.contains(":streamGenerateContent") ? .intercept : .blindTunnel
+                || path.contains(":streamGenerateContent")
+                || path.contains(":fetchAvailableModels") ? .intercept : .blindTunnel
         }
         return .blindTunnel
     }
@@ -430,13 +431,14 @@ public struct ProxyRequestPlanner: Sendable {
             return .failClosed(reason: .modelExtractionFailed)
         }
 
+        let routedMetadata = routingEngine.resolvedMetadata(for: metadata)
         switch routingEngine.decision(for: metadata) {
         case .googleDirect:
             return .forwardToGoogle(request: request.removingProxyHeaders(), metadata: metadata)
         case let .cheapRouter(endpoint):
-            switch translator.translate(metadata: metadata, body: request.body, endpoint: endpoint) {
+            switch translator.translate(metadata: routedMetadata, body: request.body, endpoint: endpoint) {
             case let .success(payload):
-                return .routeToCheapRouter(payload: payload, metadata: metadata)
+                return .routeToCheapRouter(payload: payload, metadata: routedMetadata)
             case let .failClosed(reason):
                 return .failClosed(reason: .translationFailed(reason))
             }

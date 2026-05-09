@@ -94,13 +94,16 @@ public enum RoutingDecision: Equatable, Sendable {
 public struct RoutingEngineConfiguration: Equatable, Sendable {
     public var customProviderRoutingEnabled: Bool
     public var supportedActions: Set<PorterAction>
+    public var providerModelAliases: [String: String]
 
     public init(
         customProviderRoutingEnabled: Bool = false,
-        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent]
+        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent],
+        providerModelAliases: [String: String] = [:]
     ) {
         self.customProviderRoutingEnabled = customProviderRoutingEnabled
         self.supportedActions = supportedActions
+        self.providerModelAliases = providerModelAliases
     }
 }
 
@@ -113,8 +116,20 @@ public struct RoutingEngine: Sendable {
 
     public func decision(for metadata: ModelRequestMetadata) -> RoutingDecision {
         guard config.customProviderRoutingEnabled else { return .googleDirect }
+        guard config.providerModelAliases[metadata.model] != nil else {
+            return metadata.model.hasPrefix("MODEL_PLACEHOLDER_M")
+                ? .failClosed(reason: .unsupportedModel)
+                : .googleDirect
+        }
         guard config.supportedActions.contains(metadata.action) else { return .failClosed(reason: .unsupportedAction) }
-        return .cheapRouter(endpoint: metadata.model.lowercased().contains("claude") ? .messages : .chatCompletions)
+        return .cheapRouter(endpoint: .responses)
+    }
+
+    public func resolvedMetadata(for metadata: ModelRequestMetadata) -> ModelRequestMetadata {
+        guard let providerModel = config.providerModelAliases[metadata.model],
+              providerModel != metadata.model
+        else { return metadata }
+        return ModelRequestMetadata(client: metadata.client, model: providerModel, action: metadata.action)
     }
 }
 
@@ -146,7 +161,9 @@ public struct Translator: Sendable {
             translated = makeOpenAIChatPayload(metadata: metadata, object: object)
         case .messages:
             translated = makeAnthropicMessagesPayload(metadata: metadata, object: object)
-        case .models, .responses:
+        case .responses:
+            translated = makeOpenAIResponsesPayload(metadata: metadata, object: object)
+        case .models:
             translated = nil
         }
 
@@ -199,6 +216,26 @@ public struct Translator: Sendable {
         return payload
     }
 
+    private func makeOpenAIResponsesPayload(metadata: ModelRequestMetadata, object: [String: Any]) -> [String: Any]? {
+        guard let input = googleGenerateContentResponsesInput(from: object), !input.isEmpty else {
+            return nil
+        }
+
+        var payload: [String: Any] = [
+            "model": metadata.model,
+            "input": input,
+            "stream": metadata.action == .streamGenerateContent
+        ]
+        if let system = systemInstructionText(from: object) {
+            payload["instructions"] = system
+        }
+        if let tools = openAIResponsesTools(from: object["tools"]) {
+            payload["tools"] = tools
+        }
+        applyResponsesGenerationConfig(from: object, to: &payload)
+        return payload
+    }
+
     private func applyGenerationConfig(from object: [String: Any], to payload: inout [String: Any]) {
         guard let config = object["generationConfig"] as? [String: Any] else { return }
         if let temperature = config["temperature"] {
@@ -207,6 +244,105 @@ public struct Translator: Sendable {
         if let maxOutputTokens = config["maxOutputTokens"] {
             payload["max_tokens"] = maxOutputTokens
         }
+    }
+
+    private func applyResponsesGenerationConfig(from object: [String: Any], to payload: inout [String: Any]) {
+        guard let config = object["generationConfig"] as? [String: Any] else { return }
+        if let temperature = config["temperature"] {
+            payload["temperature"] = temperature
+        }
+        if let maxOutputTokens = config["maxOutputTokens"] {
+            payload["max_output_tokens"] = maxOutputTokens
+        }
+    }
+
+    private func openAIResponsesTools(from value: Any?) -> [[String: Any]]? {
+        guard let googleTools = value as? [[String: Any]] else { return nil }
+        var tools: [[String: Any]] = []
+        for googleTool in googleTools {
+            guard let declarations = googleTool["functionDeclarations"] as? [[String: Any]] else { continue }
+            for declaration in declarations {
+                guard let name = declaration["name"] as? String, !name.isEmpty else { continue }
+                var tool: [String: Any] = [
+                    "type": "function",
+                    "name": name
+                ]
+                if let description = declaration["description"] as? String {
+                    tool["description"] = description
+                }
+                if let parameters = declaration["parameters"] {
+                    tool["parameters"] = normalizeJSONSchemaTypes(parameters)
+                }
+                tools.append(tool)
+            }
+        }
+        return tools.isEmpty ? nil : tools
+    }
+
+    private func googleGenerateContentResponsesInput(from object: [String: Any]) -> [[String: Any]]? {
+        guard let contents = object["contents"] as? [[String: Any]] else {
+            return nil
+        }
+        var input: [[String: Any]] = []
+        for content in contents {
+            let googleRole = content["role"] as? String ?? "user"
+            let role = openAIRole(fromGoogleRole: googleRole)
+            guard let parts = content["parts"] as? [[String: Any]] else {
+                return nil
+            }
+            let text = parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            if !text.isEmpty {
+                input.append(["role": role, "content": text])
+            }
+            for part in parts {
+                if let functionCall = part["functionCall"] as? [String: Any],
+                   let item = responsesFunctionCallInputItem(from: functionCall) {
+                    input.append(item)
+                }
+                if let functionResponse = part["functionResponse"] as? [String: Any],
+                   let item = responsesFunctionCallOutputItem(from: functionResponse) {
+                    input.append(item)
+                }
+            }
+        }
+        return input
+    }
+
+    private func responsesFunctionCallInputItem(from functionCall: [String: Any]) -> [String: Any]? {
+        guard let name = functionCall["name"] as? String, !name.isEmpty else { return nil }
+        let callID = functionCall["id"] as? String ?? functionCall["call_id"] as? String ?? name
+        return [
+            "type": "function_call",
+            "call_id": callID,
+            "name": name,
+            "arguments": jsonString(functionCall["args"] ?? [:])
+        ]
+    }
+
+    private func responsesFunctionCallOutputItem(from functionResponse: [String: Any]) -> [String: Any]? {
+        guard let name = functionResponse["name"] as? String, !name.isEmpty else { return nil }
+        let callID = functionResponse["id"] as? String ?? functionResponse["call_id"] as? String ?? name
+        return [
+            "type": "function_call_output",
+            "call_id": callID,
+            "output": jsonString(functionResponse["response"] ?? [:])
+        ]
+    }
+
+    private func normalizeJSONSchemaTypes(_ value: Any) -> Any {
+        if var object = value as? [String: Any] {
+            if let type = object["type"] as? String {
+                object["type"] = type.lowercased()
+            }
+            for (key, child) in object {
+                object[key] = normalizeJSONSchemaTypes(child)
+            }
+            return object
+        }
+        if let array = value as? [Any] {
+            return array.map(normalizeJSONSchemaTypes)
+        }
+        return value
     }
 
     private func googleGenerateContentMessages(from object: [String: Any], includeSystemMessage: Bool) -> [[String: String]]? {
@@ -245,6 +381,13 @@ public struct Translator: Sendable {
 
     private func openAIRole(fromGoogleRole role: String) -> String {
         role == "model" ? "assistant" : role
+    }
+
+    private func jsonString(_ value: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -299,10 +442,14 @@ public struct ResponseTranslator: Sendable {
 
         switch metadata.action {
         case .streamGenerateContent:
+            let translated = translateSSE(response.body, model: metadata.model)
+            guard !translated.isEmpty else {
+                return providerStreamFailureResponse()
+            }
             return ProxyHTTPResponse(
                 statusCode: 200,
                 headers: ["content-type": "text/event-stream", "cache-control": "no-cache"],
-                body: translateSSE(response.body, model: metadata.model)
+                body: translated
             )
         case .generateContent:
             return ProxyHTTPResponse(
@@ -319,6 +466,7 @@ public struct ResponseTranslator: Sendable {
         let text = String(decoding: body, as: UTF8.self)
         var output = Data()
         let responseID = "resp_\(UUID().uuidString)"
+        var translatedChunkCount = 0
 
         for event in text.components(separatedBy: "\n\n") {
             for line in event.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
@@ -331,12 +479,25 @@ public struct ResponseTranslator: Sendable {
 
                 for chunk in googleGenerateContentChunks(fromSSEObject: object, fallbackModel: model, responseID: responseID) {
                     output.append(Data("data: \(chunk)\r\n\r\n".utf8))
+                    translatedChunkCount += 1
                 }
             }
         }
 
+        guard translatedChunkCount > 0 else {
+            return Data()
+        }
         output.append(Data("data: [DONE]\r\n\r\n".utf8))
         return output
+    }
+
+    private func providerStreamFailureResponse() -> ProxyHTTPResponse {
+        let body = Data(#"{"error":{"message":"provider stream response was empty or unsupported"}}"#.utf8)
+        return ProxyHTTPResponse(
+            statusCode: 502,
+            headers: ["content-type": "application/json", "content-length": "\(body.count)"],
+            body: body
+        )
     }
 
     private func translateJSON(_ body: Data, model: String) -> Data {
@@ -356,6 +517,14 @@ public struct ResponseTranslator: Sendable {
             let message = choice["message"] as? [String: Any]
             text = message?["content"] as? String ?? ""
             finishReason = mapFinishReason(choice["finish_reason"] as? String)
+            usage = object["usage"] as? [String: Any]
+            responseModel = object["model"] as? String ?? model
+        } else if object["object"] as? String == "response" || object["output_text"] != nil || object["output"] != nil {
+            if let functionCall = googleFunctionCallResponseObject(fromResponsesObject: object, model: model) {
+                return (try? JSONSerialization.data(withJSONObject: functionCall, options: [.sortedKeys])) ?? body
+            }
+            text = responsesText(from: object)
+            finishReason = mapFinishReason(nil)
             usage = object["usage"] as? [String: Any]
             responseModel = object["model"] as? String ?? model
         } else if let content = object["content"] as? [[String: Any]] {
@@ -394,6 +563,31 @@ public struct ResponseTranslator: Sendable {
         }
 
         guard let type = object["type"] as? String else { return [] }
+        if type == "response.output_text.delta",
+           let delta = object["delta"] as? String,
+           !delta.isEmpty {
+            return [googleGenerateContentSSEChunk(text: delta, responseID: responseID)]
+        }
+        if (type == "response.reasoning_text.delta" || type == "response.reasoning_summary_text.delta"),
+           let delta = object["delta"] as? String,
+           !delta.isEmpty {
+            return [googleGenerateContentSSEChunk(text: delta, thought: true, responseID: responseID)]
+        }
+        if type == "response.output_item.done",
+           let item = object["item"] as? [String: Any],
+           let functionCall = googleFunctionCallPart(fromResponsesItem: item) {
+            return [googleGenerateContentSSEChunk(part: functionCall, responseID: responseID)]
+        }
+        if type == "response.completed" {
+            let response = object["response"] as? [String: Any] ?? [:]
+            return [googleGenerateContentSSEChunk(
+                text: "",
+                finishReason: mapFinishReason(nil),
+                usage: response["usage"] as? [String: Any],
+                model: response["model"] as? String ?? fallbackModel,
+                responseID: responseID
+            )]
+        }
         if type == "content_block_delta",
            let delta = object["delta"] as? [String: Any],
            let text = delta["text"] as? String,
@@ -411,6 +605,50 @@ public struct ResponseTranslator: Sendable {
             )]
         }
         return []
+    }
+
+    private func responsesText(from object: [String: Any]) -> String {
+        if let outputText = object["output_text"] as? String {
+            return outputText
+        }
+        guard let output = object["output"] as? [[String: Any]] else { return "" }
+        return output.compactMap { item -> String? in
+            guard let content = item["content"] as? [[String: Any]] else { return nil }
+            return content.compactMap { part -> String? in
+                if let text = part["text"] as? String { return text }
+                if let text = part["content"] as? String { return text }
+                return nil
+            }.joined()
+        }.joined()
+    }
+
+    private func googleFunctionCallResponseObject(fromResponsesObject object: [String: Any], model: String) -> [String: Any]? {
+        guard let output = object["output"] as? [[String: Any]] else { return nil }
+        let functionCalls = output.compactMap(googleFunctionCallPart(fromResponsesItem:))
+        guard !functionCalls.isEmpty else { return nil }
+        return [
+            "candidates": [[
+                "content": ["role": "model", "parts": functionCalls],
+                "finishReason": "STOP",
+                "index": 0
+            ]],
+            "modelVersion": object["model"] as? String ?? model
+        ]
+    }
+
+    private func googleFunctionCallPart(fromResponsesItem item: [String: Any]) -> [String: Any]? {
+        guard item["type"] as? String == "function_call",
+              let name = item["name"] as? String,
+              !name.isEmpty
+        else { return nil }
+        var functionCall: [String: Any] = [
+            "name": name,
+            "args": jsonObject(fromString: item["arguments"] as? String) ?? [:]
+        ]
+        if let callID = item["call_id"] as? String ?? item["id"] as? String {
+            functionCall["id"] = callID
+        }
+        return ["functionCall": functionCall]
     }
 
     private func googleGenerateContentSSEChunk(
@@ -441,6 +679,20 @@ public struct ResponseTranslator: Sendable {
         }
         object["responseId"] = responseID
         object = ["response": object]
+        let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return data.map { String(decoding: $0, as: UTF8.self) } ?? #"{"response":{"candidates":[]}}"#
+    }
+
+    private func googleGenerateContentSSEChunk(part: [String: Any], responseID: String) -> String {
+        let object: [String: Any] = [
+            "response": [
+                "candidates": [[
+                    "content": ["role": "model", "parts": [part]],
+                    "index": 0
+                ]],
+                "responseId": responseID
+            ]
+        ]
         let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return data.map { String(decoding: $0, as: UTF8.self) } ?? #"{"response":{"candidates":[]}}"#
     }
@@ -492,5 +744,142 @@ public struct ResponseTranslator: Sendable {
         case "content_filter": "SAFETY"
         default: "STOP"
         }
+    }
+
+    private func jsonString(_ value: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func jsonObject(fromString value: String?) -> [String: Any]? {
+        guard let value,
+              let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object
+    }
+}
+
+public enum AntigravityModelCatalogInjector {
+    public struct InjectionReport: Equatable, Sendable {
+        public let body: Data
+        public let providerModelCount: Int
+        public let insertedModelCount: Int
+        public let modelAliases: [String: String]
+    }
+
+    public static func injectProviderModels(_ providerModels: [ProviderModel], into body: Data) -> Data {
+        injectProviderModelsWithReport(providerModels, into: body).body
+    }
+
+    public static func injectProviderModelsWithReport(_ providerModels: [ProviderModel], into body: Data) -> InjectionReport {
+        guard !providerModels.isEmpty,
+              var root = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              var models = root["models"] as? [String: Any]
+        else {
+            return InjectionReport(body: body, providerModelCount: providerModels.count, insertedModelCount: 0, modelAliases: [:])
+        }
+
+        var usedModelValues = Set(models.compactMap { _, value -> String? in
+            (value as? [String: Any])?["model"] as? String
+        })
+        var insertedIDs: [String] = []
+        var modelAliases: [String: String] = [:]
+        for providerModel in providerModels {
+            guard let id = CheapRouterClient.normalizedProviderModelID(providerModel.id),
+                  models[id] == nil
+            else { continue }
+            let modelValue = placeholderModelValue(for: id, usedModelValues: &usedModelValues)
+            models[id] = injectedModelObject(id: id, modelValue: modelValue)
+            insertedIDs.append(id)
+            modelAliases[id] = id
+            modelAliases[modelValue] = id
+        }
+        guard !insertedIDs.isEmpty else {
+            return InjectionReport(body: body, providerModelCount: providerModels.count, insertedModelCount: 0, modelAliases: [:])
+        }
+
+        root["models"] = models
+        root["agentModelSorts"] = injectAgentModelSorts(root["agentModelSorts"], insertedIDs: insertedIDs)
+        let injectedBody = (try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])) ?? body
+        return InjectionReport(body: injectedBody, providerModelCount: providerModels.count, insertedModelCount: insertedIDs.count, modelAliases: modelAliases)
+    }
+
+    private static func injectedModelObject(id: String, modelValue: String) -> [String: Any] {
+        [
+            "displayName": id,
+            "maxTokens": 1_048_576,
+            "maxOutputTokens": 65_535,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "quotaInfo": ["remainingFraction": 1],
+            "model": modelValue,
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "recommended": true,
+            "supportsImages": false,
+            "supportsThinking": false,
+            "supportedMimeTypes": [:],
+            "modelExperiments": ["experiments": [:]]
+        ]
+    }
+
+    private static func placeholderModelValue(for id: String, usedModelValues: inout Set<String>) -> String {
+        let candidates = (100...150).map { "MODEL_PLACEHOLDER_M\($0)" }
+            + (90...99).map { "MODEL_PLACEHOLDER_M\($0)" }
+            + (0...89).map { "MODEL_PLACEHOLDER_M\($0)" }
+        let startIndex = Int(stableHash(id) % UInt64(candidates.count))
+        for offset in candidates.indices {
+            let candidate = candidates[(startIndex + offset) % candidates.count]
+            if !usedModelValues.contains(candidate) {
+                usedModelValues.insert(candidate)
+                return candidate
+            }
+        }
+        var suffix = Int(stableHash(id) % 1_000_000) + 151
+        while true {
+            let candidate = "MODEL_PLACEHOLDER_M\(suffix)"
+            if !usedModelValues.contains(candidate) {
+                usedModelValues.insert(candidate)
+                return candidate
+            }
+            suffix += 1
+        }
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
+    private static func injectAgentModelSorts(_ value: Any?, insertedIDs: [String]) -> [[String: Any]] {
+        let injectedGroup: [String: Any] = [
+            "displayName": "Target provider",
+            "modelIds": insertedIDs
+        ]
+        var sorts = value as? [[String: Any]] ?? []
+        if sorts.isEmpty {
+            return [["displayName": "Target provider", "groups": [injectedGroup]]]
+        }
+
+        var first = sorts[0]
+        var groups = first["groups"] as? [[String: Any]] ?? []
+        if groups.isEmpty {
+            groups = [injectedGroup]
+        } else {
+            var primary = groups[0]
+            let existingIDs = primary["modelIds"] as? [String] ?? []
+            primary["modelIds"] = existingIDs + insertedIDs.filter { !existingIDs.contains($0) }
+            groups[0] = primary
+            groups.append(injectedGroup)
+        }
+        first["groups"] = groups
+        sorts[0] = first
+        return sorts
     }
 }

@@ -63,6 +63,32 @@ final class CheapRouterClientTests: XCTestCase {
         XCTAssertEqual(transport.requests.map { $0.url?.path }, ["/v1/models"])
     }
 
+    func testParseModelsRejectsUnsafeIDsAndCapsModelCount() throws {
+        let entries = (0..<250).map { #"{"id":"provider/model-\#($0)"}"# }.joined(separator: ",")
+        let body = Data("""
+        {
+          "data": [
+            {"id": " gpt-5.5 "},
+            {"id": "bad model"},
+            {"id": "bad\\nmodel"},
+            {"id": "\(String(repeating: "a", count: 129))"},
+            \(entries)
+          ]
+        }
+        """.utf8)
+
+        let models = try CheapRouterClient.parseModelsResponse(body)
+        let ids = models.map(\.id)
+
+        XCTAssertEqual(models.count, 200)
+        XCTAssertTrue(ids.contains("gpt-5.5"))
+        XCTAssertFalse(ids.contains("bad model"))
+        XCTAssertFalse(ids.contains("bad\nmodel"))
+        XCTAssertFalse(ids.contains(String(repeating: "a", count: 129)))
+        XCTAssertEqual(CheapRouterClient.normalizedProviderModelID("anthropic/claude:opus@2026+thinking"), "anthropic/claude:opus@2026+thinking")
+        XCTAssertNil(CheapRouterClient.normalizedProviderModelID("provider model"))
+    }
+
     func testURLSessionTransportDisablesSystemProxyLookup() {
         let configuration = URLSessionCheapRouterTransport.proxyBypassingConfiguration()
 

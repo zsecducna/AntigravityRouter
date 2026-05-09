@@ -69,7 +69,6 @@ final class NWProxyServer: @unchecked Sendable {
         self.certificateAuthority = certificateAuthority
         self.eventSink = eventSink
         self.pacScriptProvider = pacScriptProvider
-
         let configuration = URLSessionCheapRouterTransport.proxyBypassingConfiguration()
         configuration.timeoutIntervalForRequest = Self.upstreamTimeout
         configuration.timeoutIntervalForResource = Self.upstreamTimeout
@@ -329,12 +328,18 @@ final class NWProxyServer: @unchecked Sendable {
             let source = isLocalReverseProxyRequest ? "Google direct local reverse" : "Google direct"
             eventSink(.direct("\(source) \(routingHost)\(request.path) status=\(response.statusCode)"))
             try writeHTTPResponse(response, on: tlsConnection)
+        } else if request.path.contains(":fetchAvailableModels") {
+            let settings = settingsStore.load()
+            let response = try injectProviderModelsIntoAvailableModels(host: routingHost, request: request, settings: settings)
+            eventSink(.direct("Google available-models \(routingHost)\(request.path) status=\(response.statusCode)"))
+            try writeHTTPResponse(response, on: tlsConnection)
         } else {
             let settings = settingsStore.load()
                 let planner = ProxyRequestPlanner(
                     routingEngine: RoutingEngine(
                         config: RoutingEngineConfiguration(
-                            customProviderRoutingEnabled: settings.customProviderRoutingEnabled
+                            customProviderRoutingEnabled: settings.customProviderRoutingEnabled,
+                            providerModelAliases: settings.providerModelAliases
                         )
                     )
                 )
@@ -574,6 +579,62 @@ final class NWProxyServer: @unchecked Sendable {
         emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM CHEAPROUTER RESPONSE", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
         let cheapRouterResponse = CheapRouterResponse(statusCode: raw.statusCode, headers: raw.headers, body: raw.body)
         return ResponseTranslator().translate(response: cheapRouterResponse, metadata: metadata)
+    }
+
+    private func injectProviderModelsIntoAvailableModels(host: String, request: HTTPRequestEnvelope, settings: PorterSettings) throws -> ProxyHTTPResponse {
+        let googleResponse = try forwardToGoogle(host: host, request: request.removingProxyHeaders())
+        guard settings.customProviderRoutingEnabled else {
+            updateProviderModelAliases([:])
+            eventSink(.log("available-models provider injection skipped: provider models disabled"))
+            return googleResponse
+        }
+        guard (200..<300).contains(googleResponse.statusCode) else {
+            eventSink(.log("available-models provider injection skipped: google status=\(googleResponse.statusCode)"))
+            return googleResponse
+        }
+        let apiKey: String
+        do {
+            apiKey = try keychainStore.string(for: .cheapRouterAPIKey) ?? ""
+        } catch {
+            eventSink(.log("available-models provider injection skipped: api key read failed \(error)"))
+            return googleResponse
+        }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            eventSink(.log("available-models provider injection skipped: api key missing"))
+            return googleResponse
+        }
+
+        let client = CheapRouterClient(configuration: .init(baseURL: settings.cheapRouterBaseURL, apiKey: apiKey))
+        let urlRequest = client.urlRequest(endpoint: .models, body: Data())
+        emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM PROVIDER MODELS REQUEST", request: urlRequest))
+        do {
+            let raw = try perform(urlRequest, session: cheapRouterSession)
+            emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM PROVIDER MODELS RESPONSE", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
+            guard (200..<300).contains(raw.statusCode) else {
+                eventSink(.log("available-models provider injection skipped: provider status=\(raw.statusCode)"))
+                return googleResponse
+            }
+            let models = try CheapRouterClient.parseModelsResponse(raw.body)
+            let report = AntigravityModelCatalogInjector.injectProviderModelsWithReport(models, into: googleResponse.body)
+            updateProviderModelAliases(report.modelAliases)
+            eventSink(.log("available-models provider models fetched=\(report.providerModelCount) inserted=\(report.insertedModelCount) response_bytes=\(report.body.count)"))
+            let response = ProxyHTTPResponse(statusCode: googleResponse.statusCode, headers: googleResponse.headers, body: report.body)
+            emitRawHTTPLog(rawProxyHTTPResponseDump(label: "INJECTED AVAILABLE MODELS RESPONSE", response: response))
+            return response
+        } catch {
+            eventSink(.log("available-models provider injection skipped: \(error)"))
+            return googleResponse
+        }
+    }
+
+    private func updateProviderModelAliases(_ aliases: [String: String]) {
+        var settings = settingsStore.load()
+        settings.providerModelAliases = aliases
+        do {
+            try settingsStore.save(settings)
+        } catch {
+            eventSink(.log("available-models provider aliases persist failed: \(error)"))
+        }
     }
 
     private func forwardToGoogle(host: String, request: HTTPRequestEnvelope) throws -> ProxyHTTPResponse {

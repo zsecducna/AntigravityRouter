@@ -33,6 +33,8 @@ final class SecurityPostureTests: XCTestCase {
         let exported = try String(contentsOf: destination)
         XCTAssertTrue(exported.contains("===== runtime.log =====\nruntime line"))
         XCTAssertTrue(exported.contains("===== raw-http.log =====\nraw line"))
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? NSNumber).intValue & 0o777
+        XCTAssertEqual(mode, 0o600)
     }
 
     func testLogTabOffersExportAction() throws {
@@ -66,12 +68,14 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains("URLCredential(trust: trust)"))
     }
 
-    func testSourceUsesSecurityKeychainPrimaryForCAMaterial() throws {
+    func testSourceKeepsCAMaterialOutOfBlockingSecurityKeychainHotPath() throws {
         let appSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
         let runtimeSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/PorterRuntimeController.swift"))
 
-        XCTAssertTrue(appSource.contains("SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityPorter.ca\")"))
-        XCTAssertTrue(runtimeSource.contains("SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityPorter.ca\")"))
+        XCTAssertTrue(appSource.contains("FileKeychainStore(directory: certificateAuthorityDirectory())"))
+        XCTAssertTrue(runtimeSource.contains("FileKeychainStore(directory: certificateAuthorityDirectory())"))
+        XCTAssertTrue(appSource.contains("fallback: SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityPorter.ca\")"))
+        XCTAssertTrue(runtimeSource.contains("fallback: SecurityKeychainStore(service: \"uk.cheaprouter.AntigravityPorter.ca\")"))
         XCTAssertTrue(appSource.contains("MigratingKeychainStore"))
         XCTAssertTrue(runtimeSource.contains("MigratingKeychainStore"))
     }
@@ -181,6 +185,49 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains(#"Button("Open Setup", systemImage: "list.bullet.clipboard")"#))
     }
 
+    func testProviderModelControlCopyMatchesSelectiveRouting() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains(#"statusRow("Provider models", settings.customProviderRoutingEnabled ? "enabled" : "disabled")"#))
+        XCTAssertTrue(source.contains("Google catalog models stay Google-direct"))
+        XCTAssertTrue(source.contains("routes only those selected models"))
+        XCTAssertFalse(source.contains("Enable Provider Models"))
+        XCTAssertFalse(source.contains("Disable Provider Models"))
+        XCTAssertFalse(source.contains("Enable Custom Provider Routing"))
+        XCTAssertFalse(source.contains("Disable Custom Provider Routing"))
+        XCTAssertFalse(source.contains("Route all supported model requests to the custom provider"))
+        XCTAssertFalse(source.contains("Forward all model requests to Google direct"))
+    }
+
+    func testProviderModelAliasesPersistAndOnlyReplaceAfterSuccessfulCatalogInjection() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/NWProxyServer.swift"))
+        let injectionRange = try XCTUnwrap(source.range(of: "private func injectProviderModelsIntoAvailableModels"))
+        let nextFunctionRange = try XCTUnwrap(source.range(of: "private func updateProviderModelAliases"))
+        let injectionBody = String(source[injectionRange.lowerBound..<nextFunctionRange.lowerBound])
+        let updateRange = try XCTUnwrap(source.range(of: "private func updateProviderModelAliases"))
+        let updateBody = String(source[updateRange.lowerBound...])
+
+        let providerRequestRange = try XCTUnwrap(injectionBody.range(of: "let client = CheapRouterClient"))
+        let successRange = try XCTUnwrap(injectionBody.range(of: "updateProviderModelAliases(report.modelAliases)"))
+        let attemptedInjectionBody = String(injectionBody[providerRequestRange.lowerBound..<successRange.lowerBound])
+
+        XCTAssertLessThan(providerRequestRange.lowerBound, successRange.lowerBound)
+        XCTAssertFalse(attemptedInjectionBody.contains("updateProviderModelAliases([:])"))
+        XCTAssertTrue(source.contains("providerModelAliases: settings.providerModelAliases"))
+        XCTAssertFalse(source.contains("private var providerModelAliases"))
+        XCTAssertTrue(updateBody.contains("settings.providerModelAliases = aliases"))
+        XCTAssertTrue(updateBody.contains("try settingsStore.save(settings)"))
+    }
+
+    func testProviderModelAliasesClearWhenProviderIdentityChanges() throws {
+        let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
+
+        XCTAssertTrue(source.contains("updated.providerModelAliases = [:]"))
+        XCTAssertTrue(source.contains("if trimmed != previous"))
+        XCTAssertTrue(source.contains("clearProviderModelAliases()"))
+        XCTAssertTrue(source.contains("try? settingsStore.save(updated)"))
+    }
+
     func testSetupFinishPersistsRoutingBeforeLaunch() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
         let finishRange = try XCTUnwrap(source.range(of: "private func finishSetupAndLaunchAntigravity()"))
@@ -224,14 +271,16 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("settings.cheapRouterBaseURL"))
     }
 
-    func testProviderURLValidationAllowsHTTPAndHTTPS() throws {
+    func testProviderURLValidationRequiresHTTPSExceptLoopbackHTTP() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityPorterApp/AntigravityPorterApp.swift"))
 
-        XCTAssertTrue(source.contains("isSupportedProviderURLScheme"))
-        XCTAssertTrue(source.contains(#"scheme == "http" || scheme == "https""#))
-        XCTAssertTrue(source.contains("Provider URL must use HTTP or HTTPS"))
-        XCTAssertFalse(source.contains(#"url.scheme == "https""#))
-        XCTAssertFalse(source.contains("Provider URL must be HTTPS"))
+        XCTAssertTrue(source.contains("isSupportedProviderURL(_ url: URL)"))
+        XCTAssertTrue(source.contains(#"if scheme == "https" { return true }"#))
+        XCTAssertTrue(source.contains(#"if scheme == "http", Self.loopbackProviderHosts.contains(host) { return true }"#))
+        XCTAssertTrue(source.contains(#"["localhost", "127.0.0.1", "::1"]"#))
+        XCTAssertTrue(source.contains("Provider URL must use HTTPS, except loopback HTTP"))
+        XCTAssertFalse(source.contains("isSupportedProviderURLScheme"))
+        XCTAssertFalse(source.contains(#"scheme == "http" || scheme == "https""#))
     }
 
     func testQuitConfirmsAndRelaunchesAntigravityWithoutProxy() throws {
@@ -382,6 +431,8 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(source.contains("SecTrustSettingsDomain.user"))
         XCTAssertTrue(source.contains("SecPolicyCreateSSL(true, nil)"))
         XCTAssertTrue(source.contains("SecTrustSettingsResult.trustRoot"))
+        XCTAssertTrue(source.contains("add-trusted-cert"))
+        XCTAssertTrue(source.contains("Library/Keychains/login.keychain-db"))
         XCTAssertFalse(source.contains("SecTrustSettingsDomain.user,\n            nil"))
         XCTAssertFalse(source.contains("/usr/bin/osascript"))
         XCTAssertFalse(source.contains("with administrator privileges"))

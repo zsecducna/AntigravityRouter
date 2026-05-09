@@ -93,6 +93,10 @@ public struct CheapRouterClientConfiguration: Equatable, Sendable {
 }
 
 public struct CheapRouterClient: Sendable {
+    private static let maximumProviderModels = 200
+    private static let maximumProviderModelIDLength = 128
+    private static let providerModelIDCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
+
     public var configuration: CheapRouterClientConfiguration
     private let transport: any CheapRouterTransport
 
@@ -151,12 +155,22 @@ public struct CheapRouterClient: Sendable {
         var ids: [String] = []
         collectModelIDs(from: root, into: &ids, acceptBareStrings: false)
         var seen = Set<String>()
-        let models = ids.compactMap { id -> ProviderModel? in
-            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
-            return ProviderModel(id: trimmed)
+        var models: [ProviderModel] = []
+        for id in ids {
+            guard let normalized = normalizedProviderModelID(id),
+                  seen.insert(normalized).inserted
+            else { continue }
+            models.append(ProviderModel(id: normalized))
+            if models.count >= maximumProviderModels { break }
         }
         return models.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+    }
+
+    public static func normalizedProviderModelID(_ raw: String) -> String? {
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, id.count <= maximumProviderModelIDLength else { return nil }
+        guard id.unicodeScalars.allSatisfy({ providerModelIDCharacters.contains($0) }) else { return nil }
+        return id
     }
 
     private static func collectModelIDs(from value: Any, into ids: inout [String], acceptBareStrings: Bool) {

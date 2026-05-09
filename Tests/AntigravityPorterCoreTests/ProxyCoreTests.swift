@@ -146,7 +146,7 @@ final class ProxyCoreTests: XCTestCase {
         XCTAssertEqual(forwarded.headers["content-type"], "application/json")
     }
 
-    func testPlannerRoutesAllModelsToCheapRouterWhenCustomProviderRoutingEnabled() throws {
+    func testPlannerRoutesProviderModelsToCheapRouterWhenCustomProviderRoutingEnabled() throws {
         let body = #"{"model":"gpt-5.5","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#
         let request = HTTPRequestEnvelope(
             method: "POST",
@@ -155,7 +155,7 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(body.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["gpt-5.5": "gpt-5.5"])))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
@@ -163,15 +163,16 @@ final class ProxyCoreTests: XCTestCase {
             return XCTFail("expected cheaprouter route, got \(action)")
         }
         XCTAssertEqual(metadata.action, .streamGenerateContent)
-        XCTAssertEqual(payload.endpoint, .chatCompletions)
+        XCTAssertEqual(payload.endpoint, .responses)
         XCTAssertEqual(payload.model, "gpt-5.5")
         let translated = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
         XCTAssertEqual(translated["model"] as? String, "gpt-5.5")
         XCTAssertEqual(translated["stream"] as? Bool, true)
+        XCTAssertNotNil(translated["input"])
     }
 
-    func testPlannerRoutesClaudeModelsToCheapRouterWhenCustomProviderRoutingEnabled() throws {
-        let body = #"{"model":"claude-sonnet-4-6","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":64}}}"#
+    func testPlannerForwardsGoogleCatalogModelsWhenCustomProviderRoutingEnabled() throws {
+        let body = #"{"model":"claude-sonnet-4-6-thinking","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":64}}}"#
         let request = HTTPRequestEnvelope(
             method: "POST",
             path: "/v1internal:streamGenerateContent",
@@ -179,15 +180,36 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(body.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["gpt-5.5": "gpt-5.5"])))
+
+        let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
+
+        guard case let .forwardToGoogle(forwarded, metadata) = action else {
+            return XCTFail("expected google direct, got \(action)")
+        }
+        XCTAssertEqual(metadata.model, "claude-sonnet-4-6-thinking")
+        XCTAssertEqual(forwarded.body, request.body)
+    }
+
+    func testPlannerResolvesProviderPlaceholderBeforeRoutingToCheapRouter() throws {
+        let body = #"{"model":"MODEL_PLACEHOLDER_M120","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#
+        let request = HTTPRequestEnvelope(
+            method: "POST",
+            path: "/v1internal:streamGenerateContent",
+            httpVersion: "HTTP/1.1",
+            headers: ["content-type": "application/json"],
+            body: Data(body.utf8)
+        )
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["MODEL_PLACEHOLDER_M120": "gpt-5.5"])))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
         guard case let .routeToCheapRouter(payload, metadata) = action else {
             return XCTFail("expected cheaprouter route, got \(action)")
         }
-        XCTAssertEqual(metadata.model, "claude-sonnet-4-6")
-        XCTAssertEqual(payload.endpoint, .messages)
+        XCTAssertEqual(metadata.model, "gpt-5.5")
+        let translated = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
+        XCTAssertEqual(translated["model"] as? String, "gpt-5.5")
     }
 
     func testPlannerFailsClosedWhenRoutedActionIsUnsupported() throws {
@@ -198,11 +220,26 @@ final class ProxyCoreTests: XCTestCase {
             headers: ["content-type": "application/json"],
             body: Data(#"{"model":"gpt-5.5","contents":[]}"#.utf8)
         )
-        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true)))
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["gpt-5.5": "gpt-5.5"])))
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
         XCTAssertEqual(action, .failClosed(reason: .routingFailed(.unsupportedAction)))
+    }
+
+    func testPlannerFailsClosedForUnknownProviderPlaceholderWhenRoutingEnabled() throws {
+        let request = HTTPRequestEnvelope(
+            method: "POST",
+            path: "/v1internal:generateContent",
+            httpVersion: "HTTP/1.1",
+            headers: ["content-type": "application/json"],
+            body: Data(#"{"model":"MODEL_PLACEHOLDER_M120","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#.utf8)
+        )
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: [:])))
+
+        let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
+
+        XCTAssertEqual(action, .failClosed(reason: .routingFailed(.unsupportedModel)))
     }
 
     func testPlannerFailsClosedWhenModelCannotBeExtracted() throws {

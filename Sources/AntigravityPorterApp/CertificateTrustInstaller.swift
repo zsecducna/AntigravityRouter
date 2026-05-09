@@ -24,7 +24,11 @@ struct CertificateTrustInstaller: Sendable {
 
         try trustManager.removeExistingCertificates(label: Self.certificateLabel)
         try trustManager.addToLoginKeychain(certificate, label: Self.certificateLabel)
-        try trustManager.trustForSSL(certificate)
+        do {
+            try trustManager.trustForSSL(certificate)
+        } catch CertificateTrustInstallerError.trustSettingsFailed {
+            try trustManager.trustForSSLUsingSecurityTool(certificateURL: certificateURL)
+        }
     }
 }
 
@@ -33,6 +37,7 @@ protocol CertificateTrustManaging: Sendable {
     func removeExistingCertificates(label: String) throws
     func addToLoginKeychain(_ certificate: SecCertificate, label: String) throws
     func trustForSSL(_ certificate: SecCertificate) throws
+    func trustForSSLUsingSecurityTool(certificateURL: URL) throws
 }
 
 struct SecurityCertificateTrustManager: CertificateTrustManaging {
@@ -88,6 +93,32 @@ struct SecurityCertificateTrustManager: CertificateTrustManaging {
         }
     }
 
+    func trustForSSLUsingSecurityTool(certificateURL: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "add-trusted-cert",
+            "-r", "trustRoot",
+            "-p", "ssl",
+            "-k", FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Keychains/login.keychain-db").path,
+            certificateURL.path
+        ]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CertificateTrustInstallerError.securityToolFailed(
+                status: process.terminationStatus,
+                message: message ?? ""
+            )
+        }
+    }
+
     private func certificates(label: String) throws -> [SecCertificate] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
@@ -120,6 +151,7 @@ enum CertificateTrustInstallerError: Error, LocalizedError, Equatable {
     case keychainAddFailed(OSStatus)
     case trustSettingsRemoveFailed(OSStatus)
     case trustSettingsFailed(OSStatus)
+    case securityToolFailed(status: Int32, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -135,6 +167,9 @@ enum CertificateTrustInstallerError: Error, LocalizedError, Equatable {
             return "CA trust install failed: trust cleanup failed \(Self.describe(status))"
         case let .trustSettingsFailed(status):
             return "CA trust install failed: trust settings failed \(Self.describe(status))"
+        case let .securityToolFailed(status, message):
+            let suffix = message.isEmpty ? "" : ": \(message)"
+            return "CA trust install failed: security tool exited \(status)\(suffix)"
         }
     }
 

@@ -22,7 +22,8 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             customProviderRoutingEnabled: false,
             rawHTTPLoggingEnabled: true,
             unsafeFullRawHTTPLoggingEnabled: false,
-            logTailLineLimit: defaultLogTailLineLimit
+            logTailLineLimit: defaultLogTailLineLimit,
+            providerModelAliases: [:]
         )
     }
 
@@ -34,6 +35,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
     public var rawHTTPLoggingEnabled: Bool
     public var unsafeFullRawHTTPLoggingEnabled: Bool
     public var logTailLineLimit: Int
+    public var providerModelAliases: [String: String]
 
     public init(
         cheapRouterBaseURL: URL,
@@ -43,7 +45,8 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         customProviderRoutingEnabled: Bool = false,
         rawHTTPLoggingEnabled: Bool = true,
         unsafeFullRawHTTPLoggingEnabled: Bool = false,
-        logTailLineLimit: Int = defaultLogTailLineLimit
+        logTailLineLimit: Int = defaultLogTailLineLimit,
+        providerModelAliases: [String: String] = [:]
     ) {
         self.cheapRouterBaseURL = cheapRouterBaseURL
         self.localProxyHost = localProxyHost
@@ -53,6 +56,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         self.rawHTTPLoggingEnabled = rawHTTPLoggingEnabled
         self.unsafeFullRawHTTPLoggingEnabled = unsafeFullRawHTTPLoggingEnabled
         self.logTailLineLimit = Self.normalizeLogTailLineLimit(logTailLineLimit)
+        self.providerModelAliases = providerModelAliases
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -64,6 +68,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         case rawHTTPLoggingEnabled
         case unsafeFullRawHTTPLoggingEnabled
         case logTailLineLimit
+        case providerModelAliases
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -83,7 +88,8 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             customProviderRoutingEnabled: try container.decodeIfPresent(Bool.self, forKey: .customProviderRoutingEnabled) ?? migratedRoutingEnabled,
             rawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .rawHTTPLoggingEnabled) ?? true,
             unsafeFullRawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .unsafeFullRawHTTPLoggingEnabled) ?? false,
-            logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit
+            logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit,
+            providerModelAliases: try container.decodeIfPresent([String: String].self, forKey: .providerModelAliases) ?? [:]
         )
     }
 

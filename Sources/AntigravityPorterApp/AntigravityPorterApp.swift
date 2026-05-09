@@ -67,12 +67,7 @@ struct AntigravityRouterApp: App {
         _settings = State(initialValue: loaded)
         _baseURLText = State(initialValue: loaded.cheapRouterBaseURL.absoluteString)
         _proxyPortText = State(initialValue: "\(loaded.localProxyPort)")
-        let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
-        if UserDefaults.standard.object(forKey: Self.setupWizardCompletedKey) == nil,
-           !savedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            UserDefaults.standard.set(true, forKey: Self.setupWizardCompletedKey)
-        }
-        _apiKey = State(initialValue: savedAPIKey)
+        _apiKey = State(initialValue: "")
         PorterRuntimeRegistry.shared.start(settings: loaded)
     }
 
@@ -106,6 +101,9 @@ struct AntigravityRouterApp: App {
                 if newValue == .status || newValue == .models {
                     commitProviderBaseURLIfValid()
                 }
+            }
+            .task {
+                loadSavedAPIKey()
             }
         }
         .menuBarExtraStyle(.window)
@@ -170,8 +168,8 @@ struct AntigravityRouterApp: App {
         switch setupWizardStep {
         case .welcome:
             VStack(alignment: .leading, spacing: 10) {
-                Text("AntigravityRouter prepares Antigravity to use a custom provider for supported model requests.")
-                Text("Model discovery stays Google-direct. Only supported inference requests are translated and routed when custom provider routing is enabled.")
+                Text("AntigravityRouter adds target-provider models to Antigravity and routes only those selected models to the provider.")
+                Text("Google catalog models stay Google-direct. Provider model discovery patches Antigravity's Google model list without replacing it.")
                     .foregroundStyle(.secondary)
                 Text("The setup checks the local CA, provider credentials, model list, and then relaunches Antigravity with the proxy environment.")
                     .foregroundStyle(.secondary)
@@ -237,7 +235,7 @@ struct AntigravityRouterApp: App {
         case .finish:
             VStack(alignment: .leading, spacing: 10) {
                 Text("Setup is ready.")
-                Text("Finishing enables custom provider routing, starts the local MITM listener, and relaunches Antigravity with the router proxy environment.")
+                Text("Finishing enables provider models, starts the local MITM listener, and relaunches Antigravity with the router proxy environment.")
                     .foregroundStyle(.secondary)
                 if !launchMessage.isEmpty {
                     Text(launchMessage)
@@ -295,7 +293,7 @@ struct AntigravityRouterApp: App {
                 statusRow("MITM", runtime.status.proxyEnabled ? "On" : "Off")
                 statusRow("App version", updater.currentVersionDisplay)
                 statusRow("Updates", updater.statusMessage)
-                statusRow("Custom provider", settings.customProviderRoutingEnabled ? "enabled" : "disabled")
+                statusRow("Provider models", settings.customProviderRoutingEnabled ? "enabled" : "disabled")
                 statusRow(PorterSettings.proxyListenLabel, "\(settings.localProxyHost):\(settings.localProxyPort)")
                 statusRow(providerStatusLabel, runtime.status.providerReachability.displayText)
                 statusRow(PorterSettings.proxyConnectsLabel, "\(runtime.status.totalRequests)")
@@ -319,20 +317,6 @@ struct AntigravityRouterApp: App {
                     Text(updater.statusMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Button(
-                        settings.customProviderRoutingEnabled ? "Disable Custom Provider Routing" : "Enable Custom Provider Routing",
-                        systemImage: settings.customProviderRoutingEnabled ? "xmark.circle" : "checkmark.circle"
-                    ) {
-                        settings.customProviderRoutingEnabled.toggle()
-                    }
-                    .help(settings.customProviderRoutingEnabled ? "Forward all model requests to Google direct" : "Route all supported model requests to the custom provider")
-                    if !transparentRoutingMessage.isEmpty {
-                        Text(transparentRoutingMessage)
-                            .font(.caption)
-                            .foregroundStyle(transparentRoutingFailed ? .red : .secondary)
-                    }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Button("Relaunch Antigravity", systemImage: "arrow.clockwise") {
@@ -628,15 +612,18 @@ struct AntigravityRouterApp: App {
 
     @discardableResult
     private func commitProviderBaseURL() -> Bool {
-        guard let url = URL(string: baseURLText), isSupportedProviderURLScheme(url.scheme) else {
+        guard let url = URL(string: baseURLText), isSupportedProviderURL(url) else {
             providerModelsCheckSucceeded = false
             providerModels = []
             modelsLoadFailed = true
-            modelsMessage = "Provider URL must use HTTP or HTTPS"
+            modelsMessage = "Provider URL must use HTTPS, except loopback HTTP"
             return false
         }
         modelsLoadFailed = false
         var updated = settings
+        if url != updated.cheapRouterBaseURL {
+            updated.providerModelAliases = [:]
+        }
         updated.cheapRouterBaseURL = url
         settings = updated
         runtime.refreshProviderReachability(settings: updated)
@@ -645,31 +632,57 @@ struct AntigravityRouterApp: App {
 
     @discardableResult
     private func commitProviderBaseURLIfValid() -> Bool {
-        guard let url = URL(string: baseURLText), isSupportedProviderURLScheme(url.scheme) else {
+        guard let url = URL(string: baseURLText), isSupportedProviderURL(url) else {
             return false
         }
         guard url != settings.cheapRouterBaseURL else {
             return true
         }
         var updated = settings
+        updated.providerModelAliases = [:]
         updated.cheapRouterBaseURL = url
         settings = updated
         runtime.refreshProviderReachability(settings: updated)
         return true
     }
 
-    private func isSupportedProviderURLScheme(_ scheme: String?) -> Bool {
-        scheme == "http" || scheme == "https"
+    private func isSupportedProviderURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              let host = url.host(percentEncoded: false)?.lowercased(),
+              !host.isEmpty
+        else { return false }
+        if scheme == "https" { return true }
+        if scheme == "http", Self.loopbackProviderHosts.contains(host) { return true }
+        return false
     }
+
+    private static let loopbackProviderHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
 
     private func saveAPIKey() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous: String
+        do {
+            previous = try keychainStore.string(for: .cheapRouterAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        } catch {
+            previous = ""
+        }
         if trimmed.isEmpty {
             try? keychainStore.delete(.cheapRouterAPIKey)
         } else {
             try? keychainStore.setString(trimmed, for: .cheapRouterAPIKey)
         }
+        if trimmed != previous {
+            clearProviderModelAliases()
+        }
         apiKey = trimmed
+    }
+
+    private func clearProviderModelAliases() {
+        guard !settings.providerModelAliases.isEmpty else { return }
+        var updated = settings
+        updated.providerModelAliases = [:]
+        settings = updated
+        try? settingsStore.save(updated)
     }
 
     private func invalidateProviderModelsCheck() {
@@ -690,6 +703,20 @@ struct AntigravityRouterApp: App {
     private func checkProviderConfiguration() {
         guard saveProviderConfiguration() else { return }
         refreshProviderModels()
+    }
+
+    private func loadSavedAPIKey() {
+        guard apiKey.isEmpty else { return }
+        Task.detached {
+            let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
+            guard !savedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            await MainActor.run {
+                apiKey = savedAPIKey
+                if UserDefaults.standard.object(forKey: Self.setupWizardCompletedKey) == nil {
+                    UserDefaults.standard.set(true, forKey: Self.setupWizardCompletedKey)
+                }
+            }
+        }
     }
 
     private func normalizeProxyPortText(_ value: String) {
@@ -972,6 +999,7 @@ struct AntigravityRouterApp: App {
             certificateInstallFailed = false
             certificateInstallMessage = "Requesting trust approval..."
             Task {
+                defer { try? FileManager.default.removeItem(at: certificateURL) }
                 do {
                     try await CertificateTrustInstaller().installAndTrust(certificateURL: certificateURL)
                     await MainActor.run {
@@ -1003,8 +1031,10 @@ struct AntigravityRouterApp: App {
         )
         let appDirectory = supportRoot.appendingPathComponent("AntigravityPorter", isDirectory: true)
         try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
-        let certificateURL = appDirectory.appendingPathComponent("AntigravityRouter Local CA.cer")
-        try certificateDER.write(to: certificateURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appDirectory.path)
+        let certificateURL = appDirectory.appendingPathComponent("AntigravityRouter Local CA-\(UUID().uuidString).cer")
+        try certificateDER.write(to: certificateURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: certificateURL.path)
         return certificateURL
     }
 
@@ -1036,12 +1066,12 @@ struct AntigravityRouterApp: App {
 
     private static func certificateAuthorityStore() -> any KeychainStoring {
         MigratingKeychainStore(
-            primary: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca"),
-            fallback: FileKeychainStore(directory: legacyCertificateAuthorityDirectory())
+            primary: FileKeychainStore(directory: certificateAuthorityDirectory()),
+            fallback: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter.ca")
         )
     }
 
-    private static func legacyCertificateAuthorityDirectory() -> URL {
+    private static func certificateAuthorityDirectory() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AntigravityPorter/CertificateAuthority", isDirectory: true)
     }
