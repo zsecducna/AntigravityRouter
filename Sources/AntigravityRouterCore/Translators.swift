@@ -87,23 +87,35 @@ public enum RoutingFailureReason: Equatable, Sendable {
 
 public enum RoutingDecision: Equatable, Sendable {
     case googleDirect
-    case cheapRouter(endpoint: CheapRouterEndpoint)
+    case cheapRouter(endpoint: CheapRouterEndpoint, providerID: String)
     case failClosed(reason: RoutingFailureReason)
 }
 
 public struct RoutingEngineConfiguration: Equatable, Sendable {
     public var customProviderRoutingEnabled: Bool
     public var supportedActions: Set<PorterAction>
-    public var providerModelAliases: [String: String]
+    public var providerModelAliases: [String: ProviderModelAlias]
 
     public init(
         customProviderRoutingEnabled: Bool = false,
         supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent],
-        providerModelAliases: [String: String] = [:]
+        providerModelAliases: [String: ProviderModelAlias] = [:]
     ) {
         self.customProviderRoutingEnabled = customProviderRoutingEnabled
         self.supportedActions = supportedActions
         self.providerModelAliases = providerModelAliases
+    }
+
+    public init(
+        customProviderRoutingEnabled: Bool = false,
+        supportedActions: Set<PorterAction> = [.generateContent, .streamGenerateContent],
+        legacyProviderModelAliases: [String: String]
+    ) {
+        self.init(
+            customProviderRoutingEnabled: customProviderRoutingEnabled,
+            supportedActions: supportedActions,
+            providerModelAliases: legacyProviderModelAliases.mapValues { ProviderModelAlias(modelID: $0) }
+        )
     }
 }
 
@@ -116,20 +128,23 @@ public struct RoutingEngine: Sendable {
 
     public func decision(for metadata: ModelRequestMetadata) -> RoutingDecision {
         guard config.customProviderRoutingEnabled else { return .googleDirect }
-        guard config.providerModelAliases[metadata.model] != nil else {
+        guard let providerModel = config.providerModelAliases[metadata.model] else {
             return metadata.model.hasPrefix("MODEL_PLACEHOLDER_M")
                 ? .failClosed(reason: .unsupportedModel)
                 : .googleDirect
         }
+        guard TargetProviderConfig.normalizedProviderID(providerModel.providerID) != nil else {
+            return .failClosed(reason: .unsupportedModel)
+        }
         guard config.supportedActions.contains(metadata.action) else { return .failClosed(reason: .unsupportedAction) }
-        return .cheapRouter(endpoint: .responses)
+        return .cheapRouter(endpoint: .responses, providerID: providerModel.providerID)
     }
 
     public func resolvedMetadata(for metadata: ModelRequestMetadata) -> ModelRequestMetadata {
         guard let providerModel = config.providerModelAliases[metadata.model],
-              providerModel != metadata.model
+              providerModel.modelID != metadata.model
         else { return metadata }
-        return ModelRequestMetadata(client: metadata.client, model: providerModel, action: metadata.action)
+        return ModelRequestMetadata(client: metadata.client, model: providerModel.modelID, action: metadata.action)
     }
 }
 
@@ -767,7 +782,7 @@ public enum AntigravityModelCatalogInjector {
         public let body: Data
         public let providerModelCount: Int
         public let insertedModelCount: Int
-        public let modelAliases: [String: String]
+        public let modelAliases: [String: ProviderModelAlias]
     }
 
     public static func injectProviderModels(_ providerModels: [ProviderModel], into body: Data) -> Data {
@@ -786,16 +801,17 @@ public enum AntigravityModelCatalogInjector {
             (value as? [String: Any])?["model"] as? String
         })
         var insertedIDs: [String] = []
-        var modelAliases: [String: String] = [:]
+        var modelAliases: [String: ProviderModelAlias] = [:]
         for providerModel in providerModels {
             guard let id = CheapRouterClient.normalizedProviderModelID(providerModel.id),
                   models[id] == nil
             else { continue }
             let modelValue = placeholderModelValue(for: id, usedModelValues: &usedModelValues)
+            let alias = alias(forDisplayedProviderModelID: id)
             models[id] = injectedModelObject(id: id, modelValue: modelValue)
             insertedIDs.append(id)
-            modelAliases[id] = id
-            modelAliases[modelValue] = id
+            modelAliases[id] = alias
+            modelAliases[modelValue] = alias
         }
         guard !insertedIDs.isEmpty else {
             return InjectionReport(body: body, providerModelCount: providerModels.count, insertedModelCount: 0, modelAliases: [:])
@@ -823,6 +839,17 @@ public enum AntigravityModelCatalogInjector {
             "supportedMimeTypes": [:],
             "modelExperiments": ["experiments": [:]]
         ]
+    }
+
+    private static func alias(forDisplayedProviderModelID id: String) -> ProviderModelAlias {
+        let parts = id.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let providerID = TargetProviderConfig.normalizedProviderID(String(parts[0])),
+              !parts[1].isEmpty
+        else {
+            return ProviderModelAlias(modelID: id)
+        }
+        return ProviderModelAlias(providerID: providerID, modelID: String(parts[1]))
     }
 
     private static func placeholderModelValue(for id: String, usedModelValues: inout Set<String>) -> String {

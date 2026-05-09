@@ -170,6 +170,69 @@ final class NWProxyServerTests: XCTestCase {
         XCTAssertTrue(canConnect(host: "::1", port: port))
     }
 
+    func testTargetProviderRequestsUseProviderSpecificKeyAndUnprefixedModel() throws {
+        let events = RuntimeEventRecorder()
+        let defaultKeychain = InMemoryKeychainStore()
+        try defaultKeychain.setString("default-key", for: .cheapRouterAPIKey)
+        let providerKeys = [
+            "openai": "openai-key",
+            "anthropic": "anthropic-key"
+        ]
+        let settingsStore = UserDefaultsSettingsStore(
+            userDefaults: InMemorySettingsDataStore(),
+            key: "NWProxyServerTests-\(UUID().uuidString)"
+        )
+        let server = NWProxyServer(
+            host: "127.0.0.1",
+            port: 0,
+            settingsStore: settingsStore,
+            keychainStore: defaultKeychain,
+            providerKeychainStoreFactory: { providerID in
+                let keychain = InMemoryKeychainStore()
+                if let apiKey = providerKeys[providerID] {
+                    try? keychain.setString(apiKey, for: .cheapRouterAPIKey)
+                }
+                return keychain
+            },
+            certificateAuthority: CertificateAuthority(keychain: defaultKeychain),
+            eventSink: { events.append($0) },
+            pacScriptProvider: { "function FindProxyForURL(url, host) { return 'DIRECT'; }" }
+        )
+        let settings = PorterSettings(
+            cheapRouterBaseURL: URL(string: "https://default.example")!,
+            localProxyHost: "127.0.0.1",
+            localProxyPort: 8877,
+            launchAtLoginEnabled: false,
+            customProviderRoutingEnabled: true,
+            targetProviders: [
+                TargetProviderConfig(id: "openai", baseURL: URL(string: "https://openai.example")!),
+                TargetProviderConfig(id: "anthropic", baseURL: URL(string: "https://anthropic.example")!)
+            ]
+        )
+        let openAIPayload = CheapRouterRequestPayload(
+            endpoint: .responses,
+            model: "gpt-5.5",
+            body: Data(#"{"model":"gpt-5.5","input":[]}"#.utf8)
+        )
+        let anthropicPayload = CheapRouterRequestPayload(
+            endpoint: .responses,
+            model: "claude-sonnet-4-6",
+            body: Data(#"{"model":"claude-sonnet-4-6","input":[]}"#.utf8)
+        )
+
+        let openAIRequest = try server.targetProviderURLRequestForTest(payload: openAIPayload, providerID: "openai", settings: settings)
+        let anthropicRequest = try server.targetProviderURLRequestForTest(payload: anthropicPayload, providerID: "anthropic", settings: settings)
+
+        XCTAssertEqual(openAIRequest.url?.absoluteString, "https://openai.example/v1/responses")
+        XCTAssertEqual(openAIRequest.value(forHTTPHeaderField: "Authorization"), "Bearer openai-key")
+        XCTAssertEqual(String(decoding: openAIRequest.httpBody ?? Data(), as: UTF8.self), #"{"model":"gpt-5.5","input":[]}"#)
+        XCTAssertFalse(String(decoding: openAIRequest.httpBody ?? Data(), as: UTF8.self).contains("openai/gpt-5.5"))
+        XCTAssertEqual(anthropicRequest.url?.absoluteString, "https://anthropic.example/v1/responses")
+        XCTAssertEqual(anthropicRequest.value(forHTTPHeaderField: "Authorization"), "Bearer anthropic-key")
+        XCTAssertEqual(String(decoding: anthropicRequest.httpBody ?? Data(), as: UTF8.self), #"{"model":"claude-sonnet-4-6","input":[]}"#)
+        XCTAssertFalse(String(decoding: anthropicRequest.httpBody ?? Data(), as: UTF8.self).contains("anthropic/claude-sonnet-4-6"))
+    }
+
     private func makeServer(events: RuntimeEventRecorder, port: Int = 0) throws -> NWProxyServer {
         let keychain = InMemoryKeychainStore()
         let settingsStore = UserDefaultsSettingsStore(

@@ -1,5 +1,75 @@
 import Foundation
 
+public struct TargetProviderConfig: Codable, Equatable, Identifiable, Sendable {
+    public static let defaultProviderID = "cheaprouter"
+
+    public var id: String
+    public var baseURL: URL
+    public var enabled: Bool
+
+    public init(id: String, baseURL: URL, enabled: Bool = true) {
+        self.id = Self.normalizedProviderID(id) ?? Self.defaultProviderID
+        self.baseURL = baseURL
+        self.enabled = enabled
+    }
+
+    public static func normalizedProviderID(_ raw: String) -> String? {
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !id.isEmpty,
+              id.count <= 48,
+              id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return id
+    }
+}
+
+public struct ProviderModelAlias: Codable, Equatable, ExpressibleByStringLiteral, Sendable {
+    public var providerID: String
+    public var modelID: String
+
+    public init(providerID: String = TargetProviderConfig.defaultProviderID, modelID: String) {
+        self.providerID = TargetProviderConfig.normalizedProviderID(providerID) ?? providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelID = modelID
+    }
+
+    public init(stringLiteral value: String) {
+        self.init(modelID: value)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case providerID
+        case modelID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawProviderID = try container.decode(String.self, forKey: .providerID)
+        guard let providerID = TargetProviderConfig.normalizedProviderID(rawProviderID) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .providerID,
+                in: container,
+                debugDescription: "providerID is invalid"
+            )
+        }
+        let modelID = try container.decode(String.self, forKey: .modelID).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelID.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .modelID,
+                in: container,
+                debugDescription: "modelID is empty"
+            )
+        }
+        self.providerID = providerID
+        self.modelID = modelID
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(providerID, forKey: .providerID)
+        try container.encode(modelID, forKey: .modelID)
+    }
+}
+
 public struct PorterSettings: Codable, Equatable, Sendable {
     public static let defaultProxyHost = "127.0.0.1"
     public static let defaultProxyPort = 8877
@@ -20,9 +90,11 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             localProxyPort: defaultProxyPort,
             launchAtLoginEnabled: false,
             customProviderRoutingEnabled: false,
+            loggingEnabled: true,
             rawHTTPLoggingEnabled: true,
             unsafeFullRawHTTPLoggingEnabled: false,
             logTailLineLimit: defaultLogTailLineLimit,
+            targetProviders: [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: defaultCheapRouterBaseURL)],
             providerModelAliases: [:]
         )
     }
@@ -32,10 +104,12 @@ public struct PorterSettings: Codable, Equatable, Sendable {
     public var localProxyPort: Int
     public var launchAtLoginEnabled: Bool
     public var customProviderRoutingEnabled: Bool
+    public var loggingEnabled: Bool
     public var rawHTTPLoggingEnabled: Bool
     public var unsafeFullRawHTTPLoggingEnabled: Bool
     public var logTailLineLimit: Int
-    public var providerModelAliases: [String: String]
+    public var targetProviders: [TargetProviderConfig]
+    public var providerModelAliases: [String: ProviderModelAlias]
 
     public init(
         cheapRouterBaseURL: URL,
@@ -43,19 +117,26 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         localProxyPort: Int,
         launchAtLoginEnabled: Bool,
         customProviderRoutingEnabled: Bool = false,
+        loggingEnabled: Bool = true,
         rawHTTPLoggingEnabled: Bool = true,
         unsafeFullRawHTTPLoggingEnabled: Bool = false,
         logTailLineLimit: Int = defaultLogTailLineLimit,
-        providerModelAliases: [String: String] = [:]
+        targetProviders: [TargetProviderConfig]? = nil,
+        providerModelAliases: [String: ProviderModelAlias] = [:]
     ) {
         self.cheapRouterBaseURL = cheapRouterBaseURL
         self.localProxyHost = localProxyHost
         self.localProxyPort = localProxyPort
         self.launchAtLoginEnabled = launchAtLoginEnabled
         self.customProviderRoutingEnabled = customProviderRoutingEnabled
+        self.loggingEnabled = loggingEnabled
         self.rawHTTPLoggingEnabled = rawHTTPLoggingEnabled
         self.unsafeFullRawHTTPLoggingEnabled = unsafeFullRawHTTPLoggingEnabled
         self.logTailLineLimit = Self.normalizeLogTailLineLimit(logTailLineLimit)
+        self.targetProviders = Self.normalizedTargetProviders(
+            targetProviders ?? [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: cheapRouterBaseURL)],
+            fallbackBaseURL: cheapRouterBaseURL
+        )
         self.providerModelAliases = providerModelAliases
     }
 
@@ -65,9 +146,11 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         case localProxyPort
         case launchAtLoginEnabled
         case customProviderRoutingEnabled
+        case loggingEnabled
         case rawHTTPLoggingEnabled
         case unsafeFullRawHTTPLoggingEnabled
         case logTailLineLimit
+        case targetProviders
         case providerModelAliases
     }
 
@@ -86,15 +169,44 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             localProxyPort: try container.decode(Int.self, forKey: .localProxyPort),
             launchAtLoginEnabled: try container.decode(Bool.self, forKey: .launchAtLoginEnabled),
             customProviderRoutingEnabled: try container.decodeIfPresent(Bool.self, forKey: .customProviderRoutingEnabled) ?? migratedRoutingEnabled,
+            loggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? true,
             rawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .rawHTTPLoggingEnabled) ?? true,
             unsafeFullRawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .unsafeFullRawHTTPLoggingEnabled) ?? false,
             logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit,
-            providerModelAliases: try container.decodeIfPresent([String: String].self, forKey: .providerModelAliases) ?? [:]
+            targetProviders: try container.decodeIfPresent([TargetProviderConfig].self, forKey: .targetProviders),
+            providerModelAliases: Self.decodeProviderModelAliases(from: container)
         )
     }
 
     private static func normalizeLogTailLineLimit(_ value: Int) -> Int {
         min(max(value, 10), 1000)
+    }
+
+    private static func normalizedTargetProviders(_ providers: [TargetProviderConfig], fallbackBaseURL: URL) -> [TargetProviderConfig] {
+        var seen = Set<String>()
+        let normalized = providers.compactMap { provider -> TargetProviderConfig? in
+            guard let id = TargetProviderConfig.normalizedProviderID(provider.id),
+                  !seen.contains(id)
+            else { return nil }
+            seen.insert(id)
+            return TargetProviderConfig(id: id, baseURL: provider.baseURL, enabled: provider.enabled)
+        }
+        if normalized.isEmpty {
+            return [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: fallbackBaseURL)]
+        }
+        return normalized
+    }
+
+    private static func decodeProviderModelAliases(from container: KeyedDecodingContainer<CodingKeys>) -> [String: ProviderModelAlias] {
+        do {
+            if let aliases = try container.decodeIfPresent([String: ProviderModelAlias].self, forKey: .providerModelAliases) {
+                return aliases
+            }
+        } catch {
+            // Fall through to legacy [String: String] aliases.
+        }
+        let legacy = (try? container.decodeIfPresent([String: String].self, forKey: .providerModelAliases)) ?? nil
+        return legacy?.mapValues { ProviderModelAlias(modelID: $0) } ?? [:]
     }
 
     public func disablingUnsafeFullRawHTTPLoggingForNewLaunch() -> PorterSettings {

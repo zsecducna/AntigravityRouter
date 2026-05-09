@@ -11,6 +11,7 @@ final class NWProxyServer: @unchecked Sendable {
     private let port: Int
     private let settingsStore: UserDefaultsSettingsStore
     private let keychainStore: any KeychainStoring
+    private let providerKeychainStoreFactory: @Sendable (String) -> any KeychainStoring
     private let certificateAuthority: CertificateAuthority
     private let eventSink: @Sendable (ProxyRuntimeEvent) -> Void
     private let pacScriptProvider: @Sendable () -> String
@@ -58,6 +59,7 @@ final class NWProxyServer: @unchecked Sendable {
         port: Int,
         settingsStore: UserDefaultsSettingsStore,
         keychainStore: any KeychainStoring,
+        providerKeychainStoreFactory: (@Sendable (String) -> any KeychainStoring)? = nil,
         certificateAuthority: CertificateAuthority,
         eventSink: @escaping @Sendable (ProxyRuntimeEvent) -> Void,
         pacScriptProvider: @escaping @Sendable () -> String
@@ -66,6 +68,12 @@ final class NWProxyServer: @unchecked Sendable {
         self.port = port
         self.settingsStore = settingsStore
         self.keychainStore = keychainStore
+        self.providerKeychainStoreFactory = providerKeychainStoreFactory ?? { providerID in
+            MigratingKeychainStore(
+                primary: SecurityKeychainStore(service: Self.providerKeychainService(providerID: providerID, legacy: false)),
+                fallback: SecurityKeychainStore(service: Self.providerKeychainService(providerID: providerID, legacy: true))
+            )
+        }
         self.certificateAuthority = certificateAuthority
         self.eventSink = eventSink
         self.pacScriptProvider = pacScriptProvider
@@ -349,9 +357,9 @@ final class NWProxyServer: @unchecked Sendable {
                 let response = try forwardToGoogle(host: routingHost, request: forwardedRequest)
                 eventSink(.directModel("Google direct model=\(metadata.model) action=\(metadata.action.logName) status=\(response.statusCode)"))
                 try writeHTTPResponse(response, on: tlsConnection)
-            case let .routeToCheapRouter(payload, metadata):
-                let response = try routeToCheapRouter(payload: payload, metadata: metadata, settings: settings)
-                eventSink(.routed("cheaprouter model=\(metadata.model) action=\(metadata.action.logName) status=\(response.statusCode)"))
+            case let .routeToCheapRouter(payload, metadata, providerID):
+                let response = try routeToCheapRouter(payload: payload, metadata: metadata, providerID: providerID, settings: settings)
+                eventSink(.routed("provider=\(providerID) model=\(metadata.model) action=\(metadata.action.logName) status=\(response.statusCode)"))
                 try writeHTTPResponse(response, on: tlsConnection)
             case let .failClosed(reason):
                 eventSink(.log("MITM fail-closed \(routingHost)\(request.path): \(reason)"))
@@ -564,21 +572,60 @@ final class NWProxyServer: @unchecked Sendable {
         }
     }
 
-    private func routeToCheapRouter(payload: CheapRouterRequestPayload, metadata: ModelRequestMetadata, settings: PorterSettings) throws -> ProxyHTTPResponse {
-        guard let apiKey = try keychainStore.string(for: .cheapRouterAPIKey), !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    private func routeToCheapRouter(payload: CheapRouterRequestPayload, metadata: ModelRequestMetadata, providerID: String, settings: PorterSettings) throws -> ProxyHTTPResponse {
+        guard let provider = providerConfig(providerID: providerID, settings: settings) else {
+            return ProxyHTTPResponse(
+                statusCode: 502,
+                headers: ["content-type": "application/json"],
+                body: Data(#"{"error":{"message":"target provider config is missing"}}"#.utf8)
+            )
+        }
+        guard let apiKey = try providerAPIKey(providerID: provider.id), !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return ProxyHTTPResponse(
                 statusCode: 401,
                 headers: ["content-type": "application/json"],
-                body: Data(#"{"error":{"message":"cheaprouter API key is missing"}}"#.utf8)
+                body: Data(#"{"error":{"message":"target provider API key is missing"}}"#.utf8)
             )
         }
-        let client = CheapRouterClient(configuration: .init(baseURL: settings.cheapRouterBaseURL, apiKey: apiKey))
-        let urlRequest = client.urlRequest(endpoint: payload.endpoint, body: payload.body)
-        emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM CHEAPROUTER REQUEST", request: urlRequest))
+        let urlRequest = targetProviderURLRequest(provider: provider, apiKey: apiKey, payload: payload)
+        emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM TARGET PROVIDER REQUEST \(provider.id)", request: urlRequest))
         let raw = try perform(urlRequest, session: cheapRouterSession)
-        emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM CHEAPROUTER RESPONSE", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
+        emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM TARGET PROVIDER RESPONSE \(provider.id)", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
         let cheapRouterResponse = CheapRouterResponse(statusCode: raw.statusCode, headers: raw.headers, body: raw.body)
         return ResponseTranslator().translate(response: cheapRouterResponse, metadata: metadata)
+    }
+
+    private func providerConfig(providerID: String, settings: PorterSettings) -> TargetProviderConfig? {
+        guard let normalized = TargetProviderConfig.normalizedProviderID(providerID) else { return nil }
+        return settings.targetProviders.first { $0.id == normalized && $0.enabled }
+    }
+
+    private func providerAPIKey(providerID: String) throws -> String? {
+        guard let normalized = TargetProviderConfig.normalizedProviderID(providerID) else { return nil }
+        if normalized == TargetProviderConfig.defaultProviderID {
+            return try keychainStore.string(for: .cheapRouterAPIKey)
+        }
+        return try providerKeychainStoreFactory(normalized).string(for: .cheapRouterAPIKey)
+    }
+
+    private static func providerKeychainService(providerID: String, legacy: Bool) -> String {
+        let prefix = legacy ? "uk.cheaprouter.AntigravityPorter.provider" : "uk.cheaprouter.AntigravityRouter.provider"
+        return "\(prefix).\(providerID)"
+    }
+
+    private func targetProviderURLRequest(provider: TargetProviderConfig, apiKey: String, payload: CheapRouterRequestPayload) -> URLRequest {
+        CheapRouterClient(configuration: .init(baseURL: provider.baseURL, apiKey: apiKey))
+            .urlRequest(endpoint: payload.endpoint, body: payload.body)
+    }
+
+    func targetProviderURLRequestForTest(payload: CheapRouterRequestPayload, providerID: String, settings: PorterSettings) throws -> URLRequest {
+        guard let provider = providerConfig(providerID: providerID, settings: settings),
+              let apiKey = try providerAPIKey(providerID: provider.id),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw PorterRuntimeError.invalidHTTPResponse
+        }
+        return targetProviderURLRequest(provider: provider, apiKey: apiKey, payload: payload)
     }
 
     private func injectProviderModelsIntoAvailableModels(host: String, request: HTTPRequestEnvelope, settings: PorterSettings) throws -> ProxyHTTPResponse {
@@ -592,42 +639,56 @@ final class NWProxyServer: @unchecked Sendable {
             eventSink(.log("available-models provider injection skipped: google status=\(googleResponse.statusCode)"))
             return googleResponse
         }
-        let apiKey: String
-        do {
-            apiKey = try keychainStore.string(for: .cheapRouterAPIKey) ?? ""
-        } catch {
-            eventSink(.log("available-models provider injection skipped: api key read failed \(error)"))
-            return googleResponse
+        var prefixedModels: [ProviderModel] = []
+        var skippedProviders: [String] = []
+        for provider in settings.targetProviders where provider.enabled {
+            let apiKey: String
+            do {
+                apiKey = try providerAPIKey(providerID: provider.id) ?? ""
+            } catch {
+                eventSink(.log("available-models provider \(provider.id) skipped: api key read failed \(error)"))
+                skippedProviders.append(provider.id)
+                continue
+            }
+            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                eventSink(.log("available-models provider \(provider.id) skipped: api key missing"))
+                skippedProviders.append(provider.id)
+                continue
+            }
+
+            let client = CheapRouterClient(configuration: .init(baseURL: provider.baseURL, apiKey: apiKey))
+            let urlRequest = client.urlRequest(endpoint: .models, body: Data())
+            emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM PROVIDER MODELS REQUEST \(provider.id)", request: urlRequest))
+            do {
+                let raw = try perform(urlRequest, session: cheapRouterSession)
+                emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM PROVIDER MODELS RESPONSE \(provider.id)", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
+                guard (200..<300).contains(raw.statusCode) else {
+                    eventSink(.log("available-models provider \(provider.id) skipped: status=\(raw.statusCode)"))
+                    skippedProviders.append(provider.id)
+                    continue
+                }
+                prefixedModels += try CheapRouterClient.parseModelsResponse(raw.body).map {
+                    ProviderModel(id: "\(provider.id)/\($0.id)")
+                }
+            } catch {
+                eventSink(.log("available-models provider \(provider.id) skipped: \(error)"))
+                skippedProviders.append(provider.id)
+            }
         }
-        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            eventSink(.log("available-models provider injection skipped: api key missing"))
+        guard !prefixedModels.isEmpty else {
+            eventSink(.log("available-models provider injection skipped: no provider models loaded"))
             return googleResponse
         }
 
-        let client = CheapRouterClient(configuration: .init(baseURL: settings.cheapRouterBaseURL, apiKey: apiKey))
-        let urlRequest = client.urlRequest(endpoint: .models, body: Data())
-        emitRawHTTPLog(rawURLRequestDump(label: "UPSTREAM PROVIDER MODELS REQUEST", request: urlRequest))
-        do {
-            let raw = try perform(urlRequest, session: cheapRouterSession)
-            emitRawHTTPLog(rawHTTPURLResponseDump(label: "UPSTREAM PROVIDER MODELS RESPONSE", statusCode: raw.statusCode, headers: raw.headers, body: raw.body))
-            guard (200..<300).contains(raw.statusCode) else {
-                eventSink(.log("available-models provider injection skipped: provider status=\(raw.statusCode)"))
-                return googleResponse
-            }
-            let models = try CheapRouterClient.parseModelsResponse(raw.body)
-            let report = AntigravityModelCatalogInjector.injectProviderModelsWithReport(models, into: googleResponse.body)
-            updateProviderModelAliases(report.modelAliases)
-            eventSink(.log("available-models provider models fetched=\(report.providerModelCount) inserted=\(report.insertedModelCount) response_bytes=\(report.body.count)"))
-            let response = ProxyHTTPResponse(statusCode: googleResponse.statusCode, headers: googleResponse.headers, body: report.body)
-            emitRawHTTPLog(rawProxyHTTPResponseDump(label: "INJECTED AVAILABLE MODELS RESPONSE", response: response))
-            return response
-        } catch {
-            eventSink(.log("available-models provider injection skipped: \(error)"))
-            return googleResponse
-        }
+        let report = AntigravityModelCatalogInjector.injectProviderModelsWithReport(prefixedModels, into: googleResponse.body)
+        updateProviderModelAliases(report.modelAliases)
+        eventSink(.log("available-models provider models fetched=\(report.providerModelCount) inserted=\(report.insertedModelCount) skipped=\(skippedProviders.joined(separator: ",")) response_bytes=\(report.body.count)"))
+        let response = ProxyHTTPResponse(statusCode: googleResponse.statusCode, headers: googleResponse.headers, body: report.body)
+        emitRawHTTPLog(rawProxyHTTPResponseDump(label: "INJECTED AVAILABLE MODELS RESPONSE", response: response))
+        return response
     }
 
-    private func updateProviderModelAliases(_ aliases: [String: String]) {
+    private func updateProviderModelAliases(_ aliases: [String: ProviderModelAlias]) {
         var settings = settingsStore.load()
         settings.providerModelAliases = aliases
         do {
@@ -728,7 +789,9 @@ final class NWProxyServer: @unchecked Sendable {
 
     private func emitRawHTTPLog(_ line: @autoclosure () -> String) {
         let settings = settingsStore.load()
-        guard settings.rawHTTPLoggingEnabled || settings.unsafeFullRawHTTPLoggingEnabled else { return }
+        guard settings.loggingEnabled,
+              settings.rawHTTPLoggingEnabled || settings.unsafeFullRawHTTPLoggingEnabled
+        else { return }
         eventSink(.log(line()))
     }
 

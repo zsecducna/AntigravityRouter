@@ -159,9 +159,10 @@ final class ProxyCoreTests: XCTestCase {
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
-        guard case let .routeToCheapRouter(payload, metadata) = action else {
+        guard case let .routeToCheapRouter(payload, metadata, providerID) = action else {
             return XCTFail("expected cheaprouter route, got \(action)")
         }
+        XCTAssertEqual(providerID, "cheaprouter")
         XCTAssertEqual(metadata.action, .streamGenerateContent)
         XCTAssertEqual(payload.endpoint, .responses)
         XCTAssertEqual(payload.model, "gpt-5.5")
@@ -204,12 +205,38 @@ final class ProxyCoreTests: XCTestCase {
 
         let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
 
-        guard case let .routeToCheapRouter(payload, metadata) = action else {
+        guard case let .routeToCheapRouter(payload, metadata, providerID) = action else {
             return XCTFail("expected cheaprouter route, got \(action)")
         }
+        XCTAssertEqual(providerID, "cheaprouter")
         XCTAssertEqual(metadata.model, "gpt-5.5")
         let translated = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
         XCTAssertEqual(translated["model"] as? String, "gpt-5.5")
+    }
+
+    func testPlannerStripsProviderPrefixBeforeTargetProviderPayload() throws {
+        let body = #"{"model":"openai/gpt-5.5","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#
+        let request = HTTPRequestEnvelope(
+            method: "POST",
+            path: "/v1internal:generateContent",
+            httpVersion: "HTTP/1.1",
+            headers: ["content-type": "application/json"],
+            body: Data(body.utf8)
+        )
+        let planner = ProxyRequestPlanner(routingEngine: RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: [
+            "openai/gpt-5.5": ProviderModelAlias(providerID: "openai", modelID: "gpt-5.5")
+        ])))
+
+        let action = planner.plan(host: "cloudcode-pa.googleapis.com", request: request)
+
+        guard case let .routeToCheapRouter(payload, metadata, providerID) = action else {
+            return XCTFail("expected provider route, got \(action)")
+        }
+        XCTAssertEqual(providerID, "openai")
+        XCTAssertEqual(metadata.model, "gpt-5.5")
+        let translated = try XCTUnwrap(JSONSerialization.jsonObject(with: payload.body) as? [String: Any])
+        XCTAssertEqual(translated["model"] as? String, "gpt-5.5")
+        XCTAssertFalse(String(decoding: payload.body, as: UTF8.self).contains("openai/gpt-5.5"))
     }
 
     func testPlannerFailsClosedWhenRoutedActionIsUnsupported() throws {

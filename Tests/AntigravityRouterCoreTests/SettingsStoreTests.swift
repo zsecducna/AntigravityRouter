@@ -12,6 +12,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(settings.rawHTTPLoggingEnabled)
         XCTAssertFalse(settings.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(settings.logTailLineLimit, 200)
+        XCTAssertTrue(settings.loggingEnabled)
+        XCTAssertEqual(settings.targetProviders, [
+            TargetProviderConfig(id: "cheaprouter", baseURL: URL(string: "https://cheaprouter.uk")!)
+        ])
         XCTAssertEqual(settings.providerModelAliases, [:])
     }
 
@@ -50,7 +54,31 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(loaded.rawHTTPLoggingEnabled)
         XCTAssertTrue(loaded.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(loaded.logTailLineLimit, 50)
-        XCTAssertEqual(loaded.providerModelAliases, ["MODEL_PLACEHOLDER_M120": "gpt-5.5"])
+        XCTAssertEqual(loaded.providerModelAliases, ["MODEL_PLACEHOLDER_M120": ProviderModelAlias(modelID: "gpt-5.5")])
+    }
+
+    func testLegacyStringAliasesDecodeToDefaultProviderAliases() throws {
+        let storage = InMemorySettingsDataStore(storage: [
+            "settings": Data(
+                #"""
+                {
+                  "cheapRouterBaseURL": "https://router.example",
+                  "localProxyHost": "127.0.0.1",
+                  "localProxyPort": 8877,
+                  "launchAtLoginEnabled": false,
+                  "providerModelAliases": {"MODEL_PLACEHOLDER_M120": "gpt-5.5"}
+                }
+                """#.utf8
+            )
+        ])
+        let store = UserDefaultsSettingsStore(userDefaults: storage, key: "settings")
+
+        let loaded = store.load()
+
+        XCTAssertEqual(loaded.targetProviders, [
+            TargetProviderConfig(id: "cheaprouter", baseURL: URL(string: "https://router.example")!)
+        ])
+        XCTAssertEqual(loaded.providerModelAliases["MODEL_PLACEHOLDER_M120"], ProviderModelAlias(providerID: "cheaprouter", modelID: "gpt-5.5"))
     }
 
     func testStoreMigratesLegacyAntigravityPorterSettingsToRouterKey() throws {

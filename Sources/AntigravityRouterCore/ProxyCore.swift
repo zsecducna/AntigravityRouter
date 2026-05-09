@@ -410,7 +410,7 @@ public enum ProxyPlanningFailure: Equatable, Sendable {
 
 public enum PlannedProxyAction: Equatable, Sendable {
     case forwardToGoogle(request: HTTPRequestEnvelope, metadata: ModelRequestMetadata)
-    case routeToCheapRouter(payload: CheapRouterRequestPayload, metadata: ModelRequestMetadata)
+    case routeToCheapRouter(payload: CheapRouterRequestPayload, metadata: ModelRequestMetadata, providerID: String)
     case failClosed(reason: ProxyPlanningFailure)
 }
 
@@ -435,10 +435,10 @@ public struct ProxyRequestPlanner: Sendable {
         switch routingEngine.decision(for: metadata) {
         case .googleDirect:
             return .forwardToGoogle(request: request.removingProxyHeaders(), metadata: metadata)
-        case let .cheapRouter(endpoint):
+        case let .cheapRouter(endpoint, providerID):
             switch translator.translate(metadata: routedMetadata, body: request.body, endpoint: endpoint) {
             case let .success(payload):
-                return .routeToCheapRouter(payload: payload, metadata: routedMetadata)
+                return .routeToCheapRouter(payload: payload, metadata: routedMetadata, providerID: providerID)
             case let .failClosed(reason):
                 return .failClosed(reason: .translationFailed(reason))
             }

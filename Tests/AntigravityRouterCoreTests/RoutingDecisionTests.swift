@@ -23,14 +23,24 @@ final class RoutingDecisionTests: XCTestCase {
 
         let decision = router.decision(for: .init(client: .antigravity, model: "gpt-5.5", action: .generateContent))
 
-        XCTAssertEqual(decision, .cheapRouter(endpoint: .responses))
+        XCTAssertEqual(decision, .cheapRouter(endpoint: .responses, providerID: "cheaprouter"))
     }
 
     func testRoutingEnabledProviderPlaceholderResolvesToProviderModel() {
         let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: ["MODEL_PLACEHOLDER_M120": "gpt-5.5"]))
         let metadata = ModelRequestMetadata(client: .antigravity, model: "MODEL_PLACEHOLDER_M120", action: .streamGenerateContent)
 
-        XCTAssertEqual(router.decision(for: metadata), .cheapRouter(endpoint: .responses))
+        XCTAssertEqual(router.decision(for: metadata), .cheapRouter(endpoint: .responses, providerID: "cheaprouter"))
+        XCTAssertEqual(router.resolvedMetadata(for: metadata).model, "gpt-5.5")
+    }
+
+    func testRoutingCarriesProviderIDAndStripsDisplayPrefix() {
+        let router = RoutingEngine(config: .init(customProviderRoutingEnabled: true, providerModelAliases: [
+            "openai/gpt-5.5": ProviderModelAlias(providerID: "openai", modelID: "gpt-5.5")
+        ]))
+        let metadata = ModelRequestMetadata(client: .antigravity, model: "openai/gpt-5.5", action: .generateContent)
+
+        XCTAssertEqual(router.decision(for: metadata), .cheapRouter(endpoint: .responses, providerID: "openai"))
         XCTAssertEqual(router.resolvedMetadata(for: metadata).model, "gpt-5.5")
     }
 

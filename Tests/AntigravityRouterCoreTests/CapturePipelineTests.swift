@@ -86,9 +86,10 @@ final class CapturePipelineTests: XCTestCase {
 
         let result = harness.replay(capture)
 
-        guard case let .routeToCheapRouter(payload, metadata) = result.action else {
+        guard case let .routeToCheapRouter(payload, metadata, providerID) = result.action else {
             return XCTFail("expected cheaprouter route, got \(result.action)")
         }
+        XCTAssertEqual(providerID, "cheaprouter")
         XCTAssertEqual(result.captureID, "antigravity-stream")
         XCTAssertEqual(metadata.model, "gpt-5.5")
         XCTAssertEqual(payload.endpoint, .responses)

@@ -34,7 +34,6 @@ struct AntigravityRouterApp: App {
     private static let setupWizardWindowWidth: CGFloat = 520
     private static let setupWizardWindowHeight: CGFloat = 560
     private let settingsStore = UserDefaultsSettingsStore()
-    private let keychainStore = Self.appSecretsStore()
     private let certificateAuthority: CertificateAuthority
     @NSApplicationDelegateAdaptor(PorterAppDelegate.self) private var appDelegate
     @AppStorage(Self.setupWizardCompletedKey) private var setupWizardCompleted = false
@@ -48,6 +47,8 @@ struct AntigravityRouterApp: App {
     @State private var modelsLoadFailed = false
     @State private var modelsLoading = false
     @State private var providerModelsCheckSucceeded = false
+    @State private var selectedProviderID: String
+    @State private var providerIDText: String
     @State private var baseURLText: String
     @State private var proxyPortText: String
     @State private var apiKey: String
@@ -68,8 +69,11 @@ struct AntigravityRouterApp: App {
         let settingsStore = UserDefaultsSettingsStore()
         self.certificateAuthority = CertificateAuthority(keychain: Self.certificateAuthorityStore())
         let loaded = Self.settingsForNewLaunch(store: settingsStore)
+        let firstProvider = loaded.targetProviders.first ?? TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: loaded.cheapRouterBaseURL)
         _settings = State(initialValue: loaded)
-        _baseURLText = State(initialValue: loaded.cheapRouterBaseURL.absoluteString)
+        _selectedProviderID = State(initialValue: firstProvider.id)
+        _providerIDText = State(initialValue: firstProvider.id)
+        _baseURLText = State(initialValue: firstProvider.baseURL.absoluteString)
         _proxyPortText = State(initialValue: "\(loaded.localProxyPort)")
         _apiKey = State(initialValue: "")
         PorterRuntimeRegistry.shared.start(settings: loaded)
@@ -98,13 +102,14 @@ struct AntigravityRouterApp: App {
             .onChange(of: baseURLText) { _, _ in
                 invalidateProviderModelsCheck()
             }
+            .onChange(of: providerIDText) { _, _ in
+                invalidateProviderModelsCheck()
+            }
             .onChange(of: apiKey) { _, _ in
                 invalidateProviderModelsCheck()
             }
-            .onChange(of: selectedTab) { _, newValue in
-                if newValue == .status || newValue == .models {
-                    commitProviderBaseURLIfValid()
-                }
+            .onChange(of: selectedProviderID) { _, _ in
+                syncSelectedProviderFields()
             }
             .task {
                 loadSavedAPIKey()
@@ -194,11 +199,19 @@ struct AntigravityRouterApp: App {
         case .provider:
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
                 GridRow {
+                    Text("Provider ID")
+                    TextField("cheaprouter", text: $providerIDText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            _ = commitProviderConfigurationFields()
+                        }
+                }
+                GridRow {
                     Text("Provider URL")
                     TextField("https://cheaprouter.uk", text: $baseURLText)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit {
-                            _ = commitProviderBaseURL()
+                            _ = commitProviderConfigurationFields()
                         }
                 }
                 GridRow {
@@ -368,7 +381,7 @@ struct AntigravityRouterApp: App {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(settings.cheapRouterBaseURL.appendingPathComponent("v1/models").absoluteString)
+                    Text(settings.targetProviders.filter(\.enabled).map { "\($0.id): \($0.baseURL.appendingPathComponent("v1/models").absoluteString)" }.joined(separator: "  "))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                     if !modelsMessage.isEmpty {
@@ -415,11 +428,28 @@ struct AntigravityRouterApp: App {
     private var settingsTab: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
             GridRow {
-                    Text("Provider URL")
-                    TextField("Base URL", text: $baseURLText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            _ = commitProviderBaseURL()
+                Text("Provider")
+                Picker("", selection: $selectedProviderID) {
+                    ForEach(settings.targetProviders) { provider in
+                        Text(provider.id).tag(provider.id)
+                    }
+                }
+                .labelsHidden()
+            }
+            GridRow {
+                Text("Provider ID")
+                TextField("cheaprouter", text: $providerIDText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        _ = commitProviderConfigurationFields()
+                    }
+            }
+            GridRow {
+                Text("Provider URL")
+                TextField("Base URL", text: $baseURLText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        _ = commitProviderConfigurationFields()
                     }
             }
             GridRow {
@@ -432,6 +462,21 @@ struct AntigravityRouterApp: App {
                         saveAPIKey()
                     }
                     .help("Save API key")
+                }
+            }
+            GridRow {
+                Text("Provider config")
+                HStack {
+                    Button("Save Provider", systemImage: "checkmark") {
+                        _ = saveProviderConfiguration()
+                    }
+                    Button("Add Provider", systemImage: "plus") {
+                        addProvider()
+                    }
+                    Button("Remove", systemImage: "minus") {
+                        removeSelectedProvider()
+                    }
+                    .disabled(settings.targetProviders.count <= 1)
                 }
             }
             GridRow {
@@ -465,10 +510,17 @@ struct AntigravityRouterApp: App {
                 .help("Run the guided setup again")
             }
             GridRow {
+                Text("Logging")
+                Toggle("", isOn: $settings.loggingEnabled)
+                    .toggleStyle(.switch)
+                    .help("Store and display runtime and raw HTTP logs")
+            }
+            GridRow {
                 Text("Raw HTTP log")
                 Toggle("", isOn: $settings.rawHTTPLoggingEnabled)
                     .toggleStyle(.switch)
                     .help("Store and display redacted HTTP request/response metadata")
+                    .disabled(!settings.loggingEnabled)
             }
             GridRow {
                 Text("Unsafe full body log")
@@ -484,6 +536,7 @@ struct AntigravityRouterApp: App {
                 ))
                     .toggleStyle(.switch)
                     .help("Store full HTTP bodies with a size cap; may expose tokens and prompts")
+                    .disabled(!settings.loggingEnabled)
             }
             GridRow {
                 Text("Tail log lines")
@@ -602,7 +655,11 @@ struct AntigravityRouterApp: App {
     }
 
     private var providerStatusLabel: String {
-        settings.cheapRouterBaseURL.host(percentEncoded: false) ?? "Target provider"
+        selectedProvider?.id ?? "Target provider"
+    }
+
+    private var selectedProvider: TargetProviderConfig? {
+        settings.targetProviders.first { $0.id == selectedProviderID }
     }
 
     private func statusRow(_ label: String, _ value: String) -> some View {
@@ -615,7 +672,14 @@ struct AntigravityRouterApp: App {
     }
 
     @discardableResult
-    private func commitProviderBaseURL() -> Bool {
+    private func commitProviderConfigurationFields() -> Bool {
+        guard let providerID = TargetProviderConfig.normalizedProviderID(providerIDText) else {
+            providerModelsCheckSucceeded = false
+            providerModels = []
+            modelsLoadFailed = true
+            modelsMessage = "Provider ID must use letters, numbers, dash, or underscore"
+            return false
+        }
         guard let url = URL(string: baseURLText), isSupportedProviderURL(url) else {
             providerModelsCheckSucceeded = false
             providerModels = []
@@ -625,27 +689,32 @@ struct AntigravityRouterApp: App {
         }
         modelsLoadFailed = false
         var updated = settings
-        if url != updated.cheapRouterBaseURL {
-            updated.providerModelAliases = [:]
-        }
-        updated.cheapRouterBaseURL = url
-        settings = updated
-        runtime.refreshProviderReachability(settings: updated)
-        return true
-    }
-
-    @discardableResult
-    private func commitProviderBaseURLIfValid() -> Bool {
-        guard let url = URL(string: baseURLText), isSupportedProviderURL(url) else {
+        let oldProviderID = selectedProviderID
+        if providerID != oldProviderID, updated.targetProviders.contains(where: { $0.id == providerID }) {
+            providerModelsCheckSucceeded = false
+            providerModels = []
+            modelsLoadFailed = true
+            modelsMessage = "Provider ID already exists"
             return false
         }
-        guard url != settings.cheapRouterBaseURL else {
-            return true
+        let oldProvider = updated.targetProviders.first { $0.id == oldProviderID }
+        if providerID != oldProviderID || url != oldProvider?.baseURL {
+            removeProviderModelAliases(from: &updated, for: [oldProviderID, providerID])
         }
-        var updated = settings
-        updated.providerModelAliases = [:]
-        updated.cheapRouterBaseURL = url
+        if let index = updated.targetProviders.firstIndex(where: { $0.id == oldProviderID }) {
+            updated.targetProviders[index] = TargetProviderConfig(id: providerID, baseURL: url, enabled: true)
+        } else {
+            updated.targetProviders.append(TargetProviderConfig(id: providerID, baseURL: url, enabled: true))
+        }
+        if providerID == TargetProviderConfig.defaultProviderID || oldProviderID == TargetProviderConfig.defaultProviderID || updated.targetProviders.first?.id == providerID {
+            updated.cheapRouterBaseURL = url
+        }
         settings = updated
+        selectedProviderID = providerID
+        providerIDText = providerID
+        if providerID != oldProviderID {
+            migrateProviderAPIKey(from: oldProviderID, to: providerID)
+        }
         runtime.refreshProviderReachability(settings: updated)
         return true
     }
@@ -662,31 +731,55 @@ struct AntigravityRouterApp: App {
 
     private static let loopbackProviderHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
 
+    private func selectedProviderKeychainStore() -> any KeychainStoring {
+        Self.providerKeychainStore(providerID: selectedProviderID)
+    }
+
     private func saveAPIKey() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let previous: String
         do {
-            previous = try keychainStore.string(for: .cheapRouterAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            previous = try selectedProviderKeychainStore().string(for: .cheapRouterAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         } catch {
             previous = ""
         }
         if trimmed.isEmpty {
-            try? keychainStore.delete(.cheapRouterAPIKey)
+            try? selectedProviderKeychainStore().delete(.cheapRouterAPIKey)
         } else {
-            try? keychainStore.setString(trimmed, for: .cheapRouterAPIKey)
+            try? selectedProviderKeychainStore().setString(trimmed, for: .cheapRouterAPIKey)
         }
         if trimmed != previous {
-            clearProviderModelAliases()
+            clearProviderModelAliases(for: [selectedProviderID])
         }
         apiKey = trimmed
     }
 
-    private func clearProviderModelAliases() {
+    private func migrateProviderAPIKey(from oldProviderID: String, to newProviderID: String) {
+        let oldStore = Self.providerKeychainStore(providerID: oldProviderID)
+        let newStore = Self.providerKeychainStore(providerID: newProviderID)
+        let visibleKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingKey = (try? oldStore.string(for: .cheapRouterAPIKey))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let keyToMigrate = visibleKey.isEmpty ? existingKey : visibleKey
+        if keyToMigrate.isEmpty {
+            try? newStore.delete(.cheapRouterAPIKey)
+        } else {
+            try? newStore.setString(keyToMigrate, for: .cheapRouterAPIKey)
+        }
+        try? oldStore.delete(.cheapRouterAPIKey)
+        apiKey = keyToMigrate
+    }
+
+    private func clearProviderModelAliases(for providerIDs: Set<String>) {
         guard !settings.providerModelAliases.isEmpty else { return }
         var updated = settings
-        updated.providerModelAliases = [:]
+        removeProviderModelAliases(from: &updated, for: providerIDs)
         settings = updated
         try? settingsStore.save(updated)
+    }
+
+    private func removeProviderModelAliases(from settings: inout PorterSettings, for providerIDs: Set<String>) {
+        guard !providerIDs.isEmpty else { return }
+        settings.providerModelAliases = settings.providerModelAliases.filter { !providerIDs.contains($0.value.providerID) }
     }
 
     private func invalidateProviderModelsCheck() {
@@ -699,9 +792,49 @@ struct AntigravityRouterApp: App {
 
     @discardableResult
     private func saveProviderConfiguration() -> Bool {
-        guard commitProviderBaseURL() else { return false }
+        guard commitProviderConfigurationFields() else { return false }
         saveAPIKey()
         return true
+    }
+
+    private func addProvider() {
+        var updated = settings
+        let base = TargetProviderConfig.defaultProviderID
+        var suffix = 2
+        var id = "\(base)-\(suffix)"
+        while updated.targetProviders.contains(where: { $0.id == id }) {
+            suffix += 1
+            id = "\(base)-\(suffix)"
+        }
+        updated.targetProviders.append(TargetProviderConfig(id: id, baseURL: PorterSettings.defaultCheapRouterBaseURL))
+        updated.providerModelAliases = [:]
+        settings = updated
+        selectedProviderID = id
+        providerIDText = id
+        baseURLText = PorterSettings.defaultCheapRouterBaseURL.absoluteString
+        apiKey = ""
+        invalidateProviderModelsCheck()
+    }
+
+    private func removeSelectedProvider() {
+        guard settings.targetProviders.count > 1 else { return }
+        var updated = settings
+        updated.targetProviders.removeAll { $0.id == selectedProviderID }
+        updated.providerModelAliases = [:]
+        if !updated.targetProviders.contains(where: { $0.id == selectedProviderID }) {
+            selectedProviderID = updated.targetProviders.first?.id ?? TargetProviderConfig.defaultProviderID
+        }
+        settings = updated
+        syncSelectedProviderFields()
+        invalidateProviderModelsCheck()
+    }
+
+    private func syncSelectedProviderFields() {
+        guard let provider = selectedProvider else { return }
+        providerIDText = provider.id
+        baseURLText = provider.baseURL.absoluteString
+        apiKey = ""
+        loadSavedAPIKey()
     }
 
     private func checkProviderConfiguration() {
@@ -712,7 +845,8 @@ struct AntigravityRouterApp: App {
     private func loadSavedAPIKey() {
         guard apiKey.isEmpty else { return }
         Task.detached {
-            let savedAPIKey = (try? SecurityKeychainStore().string(for: .cheapRouterAPIKey)) ?? ""
+            let providerID = await MainActor.run { selectedProviderID }
+            let savedAPIKey = (try? Self.providerKeychainStore(providerID: providerID).string(for: .cheapRouterAPIKey)) ?? ""
             guard !savedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             await MainActor.run {
                 apiKey = savedAPIKey
@@ -961,25 +1095,40 @@ struct AntigravityRouterApp: App {
     }
 
     private func refreshProviderModels() {
-        guard commitProviderBaseURL() else { return }
+        guard commitProviderConfigurationFields() else { return }
         modelsLoading = true
         modelsLoadFailed = false
         providerModelsCheckSucceeded = false
         modelsMessage = "Loading..."
         let settings = settings
         Task {
+            var loadedModels: [ProviderModel] = []
+            var failures: [String] = []
             do {
-                guard let apiKey = try keychainStore.string(for: .cheapRouterAPIKey),
-                      !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                else {
+                for provider in settings.targetProviders where provider.enabled {
+                    guard let apiKey = try Self.providerKeychainStore(providerID: provider.id).string(for: .cheapRouterAPIKey),
+                          !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    else {
+                        failures.append("\(provider.id): missing key")
+                        continue
+                    }
+                    let client = CheapRouterClient(configuration: .init(baseURL: provider.baseURL, apiKey: apiKey))
+                    do {
+                        let models = try await client.fetchModels()
+                        loadedModels += models.map { ProviderModel(id: "\(provider.id)/\($0.id)") }
+                    } catch {
+                        failures.append("\(provider.id): \(error.localizedDescription)")
+                    }
+                }
+                guard !loadedModels.isEmpty else {
                     throw CheapRouterClientError.badStatus(401)
                 }
-                let client = CheapRouterClient(configuration: .init(baseURL: settings.cheapRouterBaseURL, apiKey: apiKey))
-                let models = try await client.fetchModels()
                 await MainActor.run {
-                    providerModels = models
-                    modelsMessage = "\(models.count) models from target provider"
-                    modelsLoadFailed = false
+                    providerModels = loadedModels
+                    modelsMessage = failures.isEmpty
+                        ? "\(loadedModels.count) models from \(settings.targetProviders.filter(\.enabled).count) provider(s)"
+                        : "\(loadedModels.count) models; \(failures.joined(separator: "; "))"
+                    modelsLoadFailed = !failures.isEmpty
                     providerModelsCheckSucceeded = true
                     modelsLoading = false
                 }
@@ -1078,11 +1227,27 @@ struct AntigravityRouterApp: App {
         )
     }
 
-    private static func appSecretsStore() -> any KeychainStoring {
+    nonisolated private static func appSecretsStore() -> any KeychainStoring {
         MigratingKeychainStore(
-            primary: SecurityKeychainStore(service: currentKeychainService),
-            fallback: SecurityKeychainStore(service: legacyKeychainService)
+            primary: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityRouter"),
+            fallback: SecurityKeychainStore(service: "uk.cheaprouter.AntigravityPorter")
         )
+    }
+
+    nonisolated private static func providerKeychainStore(providerID: String) -> any KeychainStoring {
+        let normalized = TargetProviderConfig.normalizedProviderID(providerID) ?? TargetProviderConfig.defaultProviderID
+        if normalized == TargetProviderConfig.defaultProviderID {
+            return appSecretsStore()
+        }
+        return MigratingKeychainStore(
+            primary: SecurityKeychainStore(service: providerKeychainService(providerID: normalized, legacy: false)),
+            fallback: SecurityKeychainStore(service: providerKeychainService(providerID: normalized, legacy: true))
+        )
+    }
+
+    nonisolated private static func providerKeychainService(providerID: String, legacy: Bool) -> String {
+        let prefix = legacy ? "uk.cheaprouter.AntigravityPorter.provider" : "uk.cheaprouter.AntigravityRouter.provider"
+        return "\(prefix).\(providerID)"
     }
 
     private static func certificateAuthorityDirectory() -> URL {

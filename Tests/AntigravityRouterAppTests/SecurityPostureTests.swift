@@ -201,6 +201,20 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains("Forward all model requests to Google direct"))
     }
 
+    func testSettingsExposeLoggingToggleAndProviderIDControls() throws {
+        let appSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/AntigravityRouterApp.swift"))
+        let runtimeSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/PorterRuntimeController.swift"))
+        let proxySource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/NWProxyServer.swift"))
+
+        XCTAssertTrue(appSource.contains(#"Text("Logging")"#))
+        XCTAssertTrue(appSource.contains("$settings.loggingEnabled"))
+        XCTAssertTrue(appSource.contains(#"Text("Provider ID")"#))
+        XCTAssertTrue(appSource.contains("providerIDText"))
+        XCTAssertTrue(appSource.contains("Add Provider"))
+        XCTAssertTrue(runtimeSource.contains("guard settingsStore.load().loggingEnabled else { return }"))
+        XCTAssertTrue(proxySource.contains("guard settings.loggingEnabled"))
+    }
+
     func testProviderModelAliasesPersistAndOnlyReplaceAfterSuccessfulCatalogInjection() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/NWProxyServer.swift"))
         let injectionRange = try XCTUnwrap(source.range(of: "private func injectProviderModelsIntoAvailableModels"))
@@ -224,9 +238,10 @@ final class SecurityPostureTests: XCTestCase {
     func testProviderModelAliasesClearWhenProviderIdentityChanges() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/AntigravityRouterApp.swift"))
 
-        XCTAssertTrue(source.contains("updated.providerModelAliases = [:]"))
+        XCTAssertTrue(source.contains("removeProviderModelAliases(from: &updated, for: [oldProviderID, providerID])"))
+        XCTAssertTrue(source.contains("settings.providerModelAliases = settings.providerModelAliases.filter { !providerIDs.contains($0.value.providerID) }"))
         XCTAssertTrue(source.contains("if trimmed != previous"))
-        XCTAssertTrue(source.contains("clearProviderModelAliases()"))
+        XCTAssertTrue(source.contains("clearProviderModelAliases(for: [selectedProviderID])"))
         XCTAssertTrue(source.contains("try? settingsStore.save(updated)"))
     }
 
@@ -259,18 +274,18 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertTrue(invalidateBody.contains(#"modelsMessage = "Not checked""#))
     }
 
-    func testProviderURLFieldCommitsBeforeStatusAndModelRefreshUseIt() throws {
+    func testProviderURLFieldCommitsExplicitlyBeforeModelRefreshUsesIt() throws {
         let source = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/AntigravityRouterApp.swift"))
 
-        XCTAssertTrue(source.contains(".onChange(of: selectedTab)"))
-        XCTAssertTrue(source.contains("commitProviderBaseURLIfValid()"))
+        XCTAssertFalse(source.contains(".onChange(of: selectedTab)"))
+        XCTAssertTrue(source.contains(#"Button("Save Provider", systemImage: "checkmark")"#))
         XCTAssertFalse(source.contains(#"Text("cheaprouter.uk")"#))
 
         let refreshRange = try XCTUnwrap(source.range(of: "private func refreshProviderModels()"))
         let nextFunctionRange = try XCTUnwrap(source.range(of: "private func installCertificate()"))
         let refreshBody = String(source[refreshRange.lowerBound..<nextFunctionRange.lowerBound])
-        XCTAssertTrue(refreshBody.contains("guard commitProviderBaseURL() else { return }"))
-        XCTAssertTrue(refreshBody.contains("settings.cheapRouterBaseURL"))
+        XCTAssertTrue(refreshBody.contains("guard commitProviderConfigurationFields() else { return }"))
+        XCTAssertTrue(refreshBody.contains("settings.targetProviders"))
     }
 
     func testProviderURLValidationRequiresHTTPSExceptLoopbackHTTP() throws {

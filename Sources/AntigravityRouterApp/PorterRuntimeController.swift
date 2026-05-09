@@ -134,7 +134,8 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
             status.providerReachability = .checking
         }
 
-        var request = URLRequest(url: settings.cheapRouterBaseURL)
+        let providerURL = settings.targetProviders.first(where: \.enabled)?.baseURL ?? settings.cheapRouterBaseURL
+        var request = URLRequest(url: providerURL)
         request.httpMethod = "HEAD"
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 5
@@ -250,6 +251,7 @@ final class PorterRuntimeController: ObservableObject, @unchecked Sendable {
     }
 
     private func appendRuntimeLog(_ line: String) {
+        guard settingsStore.load().loggingEnabled else { return }
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let rendered = "\(timestamp) \(line)"
         let displayed = Self.displayLine(for: rendered)

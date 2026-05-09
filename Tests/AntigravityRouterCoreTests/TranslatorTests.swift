@@ -428,8 +428,8 @@ final class TranslatorTests: XCTestCase {
         XCTAssertNotEqual(gpt["model"] as? String, "MODEL_PLACEHOLDER_M37")
         XCTAssertNotEqual(gpt["model"] as? String, "MODEL_PLACEHOLDER_M100")
         XCTAssertNotEqual(gpt["model"] as? String, claude["model"] as? String)
-        XCTAssertEqual(report.modelAliases["gpt-5.5"], "gpt-5.5")
-        XCTAssertEqual(report.modelAliases[gpt["model"] as? String ?? ""], "gpt-5.5")
+        XCTAssertEqual(report.modelAliases["gpt-5.5"], ProviderModelAlias(modelID: "gpt-5.5"))
+        XCTAssertEqual(report.modelAliases[gpt["model"] as? String ?? ""], ProviderModelAlias(modelID: "gpt-5.5"))
         XCTAssertEqual(groups.first?["modelIds"] as? [String], ["gemini-3-flash", "gpt-5.5", "claude-sonnet-4-6"])
         XCTAssertEqual(targetGroup["displayName"] as? String, "Target provider")
         XCTAssertEqual(targetGroup["modelIds"] as? [String], ["gpt-5.5", "claude-sonnet-4-6"])
@@ -454,6 +454,23 @@ final class TranslatorTests: XCTestCase {
         XCTAssertEqual(Set(insertedValues).count, providerModels.count)
         XCTAssertTrue(insertedValues.allSatisfy { $0.hasPrefix("MODEL_PLACEHOLDER_M") })
         XCTAssertTrue(insertedValues.allSatisfy { Int($0.replacingOccurrences(of: "MODEL_PLACEHOLDER_M", with: "")) ?? 0 >= 151 })
+    }
+
+    func testInjectedProviderModelsUseProviderPrefixedDisplayAndUnprefixedTargetAlias() throws {
+        let body = Data(#"{"models":{}}"#.utf8)
+
+        let report = AntigravityModelCatalogInjector.injectProviderModelsWithReport(
+            [ProviderModel(id: "openai/gpt-5.5")],
+            into: body
+        )
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: report.body) as? [String: Any])
+        let models = try XCTUnwrap(json["models"] as? [String: Any])
+        let injected = try XCTUnwrap(models["openai/gpt-5.5"] as? [String: Any])
+        let placeholder = try XCTUnwrap(injected["model"] as? String)
+
+        XCTAssertEqual(injected["displayName"] as? String, "openai/gpt-5.5")
+        XCTAssertEqual(report.modelAliases["openai/gpt-5.5"], ProviderModelAlias(providerID: "openai", modelID: "gpt-5.5"))
+        XCTAssertEqual(report.modelAliases[placeholder], ProviderModelAlias(providerID: "openai", modelID: "gpt-5.5"))
     }
 
     func testUnsupportedProviderStreamReturnsBadGatewayInsteadOfEmptyDone() throws {
