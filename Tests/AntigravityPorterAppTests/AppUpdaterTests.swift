@@ -220,6 +220,37 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dmgURL), dmgData)
     }
 
+    func testCheckPrefersGitHubDigestOverStaleChecksumAsset() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AntigravityRouterUpdateTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dmgData = Data("fake stapled dmg".utf8)
+        let checksum = SHA256.hash(data: dmgData).map { String(format: "%02x", $0) }.joined()
+        let dmg = AppRelease.Asset(
+            name: "AntigravityRouter-v0.1.2-macos-arm64.dmg",
+            browserDownloadURL: URL(string: "https://example.test/app.dmg")!,
+            digest: "sha256:\(checksum)"
+        )
+        let checksumAsset = AppRelease.Asset(
+            name: "AntigravityRouter-v0.1.2-macos-arm64.dmg.sha256",
+            browserDownloadURL: URL(string: "https://example.test/app.dmg.sha256")!
+        )
+        let client = FakeAppUpdateClient(
+            release: AppRelease(tagName: "v0.1.2", assets: [dmg, checksumAsset]),
+            downloads: [dmg.name: dmgData],
+            assetData: [checksumAsset.name: Data("\(String(repeating: "0", count: 64))  \(dmg.name)\n".utf8)]
+        )
+        let service = AppUpdateService(client: client, verifier: PassingAppUpdateVerifier(), updatesDirectory: directory)
+
+        let result = try await service.checkForUpdate(currentVersion: "0.1.1")
+
+        guard case let .updateReady(version, dmgURL) = result else {
+            return XCTFail("expected updateReady, got \(result)")
+        }
+        XCTAssertEqual(version, "v0.1.2")
+        XCTAssertEqual(try Data(contentsOf: dmgURL), dmgData)
+    }
+
     func testCheckRejectsFailedNotarizationAndDeletesDMG() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AntigravityRouterUpdateTests-\(UUID().uuidString)", isDirectory: true)

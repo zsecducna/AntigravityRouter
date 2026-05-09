@@ -274,14 +274,14 @@ struct AppUpdateService: Sendable {
     }
 
     private func expectedSHA256(for asset: AppRelease.Asset, in release: AppRelease) async throws -> String {
+        if let digest = asset.digest, let checksum = Self.parseSHA256(digest) {
+            return checksum
+        }
         if let checksumAsset = release.sha256Asset(for: asset) {
             let data = try await client.fetchAssetData(checksumAsset)
             if let checksum = Self.parseSHA256(String(decoding: data, as: UTF8.self)) {
                 return checksum
             }
-        }
-        if let digest = asset.digest, let checksum = Self.parseSHA256(digest) {
-            return checksum
         }
         throw AppUpdateError.missingChecksum(asset.name)
     }
