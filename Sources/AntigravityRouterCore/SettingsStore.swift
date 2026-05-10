@@ -95,6 +95,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             unsafeFullRawHTTPLoggingEnabled: false,
             logTailLineLimit: defaultLogTailLineLimit,
             targetProviders: [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: defaultCheapRouterBaseURL)],
+            disabledProviderModelIDs: [],
             providerModelAliases: [:]
         )
     }
@@ -109,6 +110,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
     public var unsafeFullRawHTTPLoggingEnabled: Bool
     public var logTailLineLimit: Int
     public var targetProviders: [TargetProviderConfig]
+    public var disabledProviderModelIDs: Set<String>
     public var providerModelAliases: [String: ProviderModelAlias]
 
     public init(
@@ -122,6 +124,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         unsafeFullRawHTTPLoggingEnabled: Bool = false,
         logTailLineLimit: Int = defaultLogTailLineLimit,
         targetProviders: [TargetProviderConfig]? = nil,
+        disabledProviderModelIDs: Set<String> = [],
         providerModelAliases: [String: ProviderModelAlias] = [:]
     ) {
         self.cheapRouterBaseURL = cheapRouterBaseURL
@@ -137,6 +140,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             targetProviders ?? [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: cheapRouterBaseURL)],
             fallbackBaseURL: cheapRouterBaseURL
         )
+        self.disabledProviderModelIDs = Self.normalizedProviderModelIDs(disabledProviderModelIDs)
         self.providerModelAliases = providerModelAliases
     }
 
@@ -151,6 +155,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
         case unsafeFullRawHTTPLoggingEnabled
         case logTailLineLimit
         case targetProviders
+        case disabledProviderModelIDs
         case providerModelAliases
     }
 
@@ -174,6 +179,7 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             unsafeFullRawHTTPLoggingEnabled: try container.decodeIfPresent(Bool.self, forKey: .unsafeFullRawHTTPLoggingEnabled) ?? false,
             logTailLineLimit: try container.decodeIfPresent(Int.self, forKey: .logTailLineLimit) ?? Self.defaultLogTailLineLimit,
             targetProviders: try container.decodeIfPresent([TargetProviderConfig].self, forKey: .targetProviders),
+            disabledProviderModelIDs: try container.decodeIfPresent(Set<String>.self, forKey: .disabledProviderModelIDs) ?? [],
             providerModelAliases: Self.decodeProviderModelAliases(from: container)
         )
     }
@@ -195,6 +201,10 @@ public struct PorterSettings: Codable, Equatable, Sendable {
             return [TargetProviderConfig(id: TargetProviderConfig.defaultProviderID, baseURL: fallbackBaseURL)]
         }
         return normalized
+    }
+
+    private static func normalizedProviderModelIDs(_ ids: Set<String>) -> Set<String> {
+        Set(ids.compactMap { CheapRouterClient.normalizedProviderModelID($0) })
     }
 
     private static func decodeProviderModelAliases(from container: KeyedDecodingContainer<CodingKeys>) -> [String: ProviderModelAlias] {

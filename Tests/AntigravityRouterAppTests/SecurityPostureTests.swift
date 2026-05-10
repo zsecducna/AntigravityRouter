@@ -201,6 +201,20 @@ final class SecurityPostureTests: XCTestCase {
         XCTAssertFalse(source.contains("Forward all model requests to Google direct"))
     }
 
+    func testModelsTabLetsUsersDisableModelsAndRequiresRelaunchConfirmation() throws {
+        let appSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/AntigravityRouterApp.swift"))
+        let proxySource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/NWProxyServer.swift"))
+
+        XCTAssertTrue(appSource.contains("modelRelaunchConfirmationPending"))
+        XCTAssertTrue(appSource.contains("setProviderModel(model.id, enabled: enabled)"))
+        XCTAssertTrue(appSource.contains("updated.disabledProviderModelIDs.insert(normalized)"))
+        XCTAssertTrue(appSource.contains(#"Button("Relaunch Antigravity", systemImage: "arrow.clockwise")"#))
+        XCTAssertTrue(appSource.contains("Disabled provider models are removed from Antigravity's model catalog after relaunch."))
+        XCTAssertTrue(appSource.contains("launchAntigravityViaPorter()"))
+        XCTAssertTrue(proxySource.contains("!settings.disabledProviderModelIDs.contains($0.id)"))
+        XCTAssertTrue(proxySource.contains("updateProviderModelAliases([:])"))
+    }
+
     func testSettingsExposeLoggingToggleAndProviderIDControls() throws {
         let appSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/AntigravityRouterApp.swift"))
         let runtimeSource = try String(contentsOf: packageRoot().appendingPathComponent("Sources/AntigravityRouterApp/PorterRuntimeController.swift"))
@@ -225,10 +239,12 @@ final class SecurityPostureTests: XCTestCase {
 
         let providerRequestRange = try XCTUnwrap(injectionBody.range(of: "let client = CheapRouterClient"))
         let successRange = try XCTUnwrap(injectionBody.range(of: "updateProviderModelAliases(report.modelAliases)"))
-        let attemptedInjectionBody = String(injectionBody[providerRequestRange.lowerBound..<successRange.lowerBound])
+        let allModelsDisabledRange = try XCTUnwrap(injectionBody.range(of: "guard !prefixedModels.isEmpty"))
+        let attemptedFetchBody = String(injectionBody[providerRequestRange.lowerBound..<allModelsDisabledRange.lowerBound])
 
         XCTAssertLessThan(providerRequestRange.lowerBound, successRange.lowerBound)
-        XCTAssertFalse(attemptedInjectionBody.contains("updateProviderModelAliases([:])"))
+        XCTAssertLessThan(allModelsDisabledRange.lowerBound, successRange.lowerBound)
+        XCTAssertFalse(attemptedFetchBody.contains("updateProviderModelAliases([:])"))
         XCTAssertTrue(source.contains("providerModelAliases: settings.providerModelAliases"))
         XCTAssertFalse(source.contains("private var providerModelAliases"))
         XCTAssertTrue(updateBody.contains("settings.providerModelAliases = aliases"))

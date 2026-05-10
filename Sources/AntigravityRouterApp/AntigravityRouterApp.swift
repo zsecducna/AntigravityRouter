@@ -61,6 +61,7 @@ struct AntigravityRouterApp: App {
     @State private var launchFailed = false
     @State private var unsafeLogConfirmationPending = false
     @State private var quitConfirmationPending = false
+    @State private var modelRelaunchConfirmationPending = false
     @State private var launchedAntigravityApp: NSRunningApplication?
     @State private var logExportMessage = ""
     @State private var logExportFailed = false
@@ -406,6 +407,25 @@ struct AntigravityRouterApp: App {
                     }
                 }
             }
+            if modelRelaunchConfirmationPending {
+                Divider()
+                Text("Relaunch Antigravity to apply model changes?")
+                    .font(.headline)
+                Text("Disabled provider models are removed from Antigravity's model catalog after relaunch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Relaunch Antigravity", systemImage: "arrow.clockwise") {
+                        modelRelaunchConfirmationPending = false
+                        launchAntigravityViaPorter()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer()
+                    Button("Not Now", systemImage: "clock") {
+                        modelRelaunchConfirmationPending = false
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
@@ -417,8 +437,17 @@ struct AntigravityRouterApp: App {
 
     private func modelRow(_ model: ProviderModel) -> some View {
         HStack(spacing: 10) {
+            Toggle("", isOn: Binding(
+                get: { !settings.disabledProviderModelIDs.contains(model.id) },
+                set: { enabled in
+                    setProviderModel(model.id, enabled: enabled)
+                }
+            ))
+            .labelsHidden()
+            .help("Enable model in Antigravity")
             Text(model.id)
                 .font(.system(.body, design: .monospaced))
+                .foregroundStyle(settings.disabledProviderModelIDs.contains(model.id) ? .secondary : .primary)
 
             Spacer()
         }
@@ -840,6 +869,18 @@ struct AntigravityRouterApp: App {
     private func checkProviderConfiguration() {
         guard saveProviderConfiguration() else { return }
         refreshProviderModels()
+    }
+
+    private func setProviderModel(_ id: String, enabled: Bool) {
+        guard let normalized = CheapRouterClient.normalizedProviderModelID(id) else { return }
+        var updated = settings
+        if enabled {
+            updated.disabledProviderModelIDs.remove(normalized)
+        } else {
+            updated.disabledProviderModelIDs.insert(normalized)
+            modelRelaunchConfirmationPending = true
+        }
+        settings = updated
     }
 
     private func loadSavedAPIKey() {

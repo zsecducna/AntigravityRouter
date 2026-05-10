@@ -16,6 +16,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.targetProviders, [
             TargetProviderConfig(id: "cheaprouter", baseURL: URL(string: "https://cheaprouter.uk")!)
         ])
+        XCTAssertEqual(settings.disabledProviderModelIDs, [])
         XCTAssertEqual(settings.providerModelAliases, [:])
     }
 
@@ -41,6 +42,7 @@ final class SettingsStoreTests: XCTestCase {
             rawHTTPLoggingEnabled: false,
             unsafeFullRawHTTPLoggingEnabled: true,
             logTailLineLimit: 50,
+            disabledProviderModelIDs: [" openai/gpt-5.5 ", "bad model"],
             providerModelAliases: ["MODEL_PLACEHOLDER_M120": "gpt-5.5"]
         )
 
@@ -54,6 +56,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(loaded.rawHTTPLoggingEnabled)
         XCTAssertTrue(loaded.unsafeFullRawHTTPLoggingEnabled)
         XCTAssertEqual(loaded.logTailLineLimit, 50)
+        XCTAssertEqual(loaded.disabledProviderModelIDs, ["openai/gpt-5.5"])
         XCTAssertEqual(loaded.providerModelAliases, ["MODEL_PLACEHOLDER_M120": ProviderModelAlias(modelID: "gpt-5.5")])
     }
 

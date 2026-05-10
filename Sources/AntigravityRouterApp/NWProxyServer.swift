@@ -669,6 +669,8 @@ final class NWProxyServer: @unchecked Sendable {
                 }
                 prefixedModels += try CheapRouterClient.parseModelsResponse(raw.body).map {
                     ProviderModel(id: "\(provider.id)/\($0.id)")
+                }.filter {
+                    !settings.disabledProviderModelIDs.contains($0.id)
                 }
             } catch {
                 eventSink(.log("available-models provider \(provider.id) skipped: \(error)"))
@@ -676,6 +678,7 @@ final class NWProxyServer: @unchecked Sendable {
             }
         }
         guard !prefixedModels.isEmpty else {
+            updateProviderModelAliases([:])
             eventSink(.log("available-models provider injection skipped: no provider models loaded"))
             return googleResponse
         }
